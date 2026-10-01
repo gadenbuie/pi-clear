@@ -33,9 +33,12 @@ interface ClearHandoff {
 	provider: string;
 	modelId: string;
 	thinkingLevel?: string;
+	/** When the handoff was written; stale handoffs are ignored. */
+	createdAt: number;
 }
 
 const HANDOFF_KEY = "__pi_clear_handoff__";
+const HANDOFF_TTL_MS = 30_000;
 
 const THINKING_LEVELS = [
 	"off",
@@ -80,12 +83,15 @@ export default function (pi: ExtensionAPI) {
 						provider: model.provider,
 						modelId: model.id,
 						thinkingLevel: ctx.thinkingLevel,
+						createdAt: Date.now(),
 					});
 				}
 
 				const result = await ctx.newSession();
+				// Normally session_start already consumed the handoff; clear any
+				// leftover so it can never apply to a later, unrelated /new.
+				takeHandoff();
 				if (result.cancelled) {
-					takeHandoff();
 					ctx.ui.notify("Clear cancelled by extension", "warning");
 				}
 			} catch (err) {
@@ -100,6 +106,7 @@ export default function (pi: ExtensionAPI) {
 
 		const handoff = takeHandoff();
 		if (!handoff) return;
+		if (Date.now() - handoff.createdAt > HANDOFF_TTL_MS) return;
 
 		try {
 			const model = ctx.modelRegistry.find(handoff.provider, handoff.modelId);

@@ -76,11 +76,21 @@ class RpcSession:
 			time.sleep(POLL_INTERVAL)
 		raise TimeoutError(f"timed out waiting for {description}")
 
-	def get_state(self):
-		"""Send get_state and wait for the response; returns (model, thinkingLevel)."""
+	def get_state(self, timeout=20):
+		"""Send get_state and wait for the response.
+
+		Returns (model, thinkingLevel, sessionId); raises if pi has no model.
+		"""
 		request_id = self.send("get_state")
-		data = self.wait_response(request_id, "get_state")["data"]
-		return data["model"]["provider"] + "/" + data["model"]["id"], data.get("thinkingLevel")
+		data = self.wait_response(request_id, "get_state", timeout=timeout)["data"]
+		model = data.get("model")
+		if not model:
+			raise RuntimeError("pi has no active model; smoke test cannot run")
+		return (
+			model["provider"] + "/" + model["id"],
+			data.get("thinkingLevel"),
+			data.get("sessionId"),
+		)
 
 	def terminate(self):
 		self.proc.terminate()
@@ -105,8 +115,15 @@ def main():
 
 	try:
 		# Wait for pi to accept input; first successful get_state means it is ready.
-		wait_until(lambda: rpc.get_state() if os.path.exists(rpc.log_path) else None, STARTUP_WAIT, "pi startup")
-		initial_model, _ = rpc.get_state()
+		def ready():
+			try:
+				rpc.get_state(timeout=5)
+				return True
+			except TimeoutError:
+				return None
+
+		wait_until(ready, STARTUP_WAIT, "pi startup")
+		initial_model, _, _ = rpc.get_state()
 		print("initial:", initial_model)
 
 		request_id = rpc.send("get_available_models")
@@ -130,20 +147,23 @@ def main():
 		if not rpc.wait_response(request_id, "set_thinking_level")["success"]:
 			fail("set_thinking_level failed")
 
-		switched_model, switched_level = rpc.get_state()
+		switched_model, switched_level, _ = rpc.get_state()
 		print("before /clear:", switched_model, "thinking:", switched_level)
 		if switched_model != target_model:
 			fail(f"model did not change before /clear (still {switched_model})")
+
+		_, _, pre_clear_session_id = rpc.get_state()
 
 		request_id = rpc.send("prompt", message="/clear")
 		if not rpc.wait_response(request_id, "/clear prompt")["success"]:
 			fail("/clear prompt failed")
 
-		# Poll until the replacement session reports the restored state.
+		# Poll until the replacement session is live (sessionId changed); the
+		# prompt response only confirms preflight, not the replacement itself.
 		def cleared_state():
-			model, level = rpc.get_state()
-			if model == initial_model:
-				return None  # session may not have switched yet; keep polling
+			model, level, session_id = rpc.get_state()
+			if session_id == pre_clear_session_id:
+				return None  # replacement session not active yet; keep polling
 			return model, level
 
 		final_model, final_level = wait_until(cleared_state, SETTLE_TIMEOUT, "session replacement")
