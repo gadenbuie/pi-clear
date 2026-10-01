@@ -147,30 +147,39 @@ def main():
 		if not rpc.wait_response(request_id, "set_thinking_level")["success"]:
 			fail("set_thinking_level failed")
 
-		switched_model, switched_level, _ = rpc.get_state()
+		switched_model, switched_level, pre_clear_session_id = rpc.get_state()
 		print("before /clear:", switched_model, "thinking:", switched_level)
 		if switched_model != target_model:
 			fail(f"model did not change before /clear (still {switched_model})")
-
-		_, _, pre_clear_session_id = rpc.get_state()
 
 		request_id = rpc.send("prompt", message="/clear")
 		if not rpc.wait_response(request_id, "/clear prompt")["success"]:
 			fail("/clear prompt failed")
 
-		# Poll until the replacement session is live (sessionId changed); the
-		# prompt response only confirms preflight, not the replacement itself.
+		# Poll until the replacement session is live (sessionId changed) AND the
+		# restored model/thinking level are applied. The prompt response only
+		# confirms preflight, and session_start's restore is asynchronous, so a
+		# changed sessionId alone doesn't prove restoration finished.
+		last_state = {"model": None, "level": None}
+
 		def cleared_state():
 			model, level, session_id = rpc.get_state()
+			last_state.update(model=model, level=level)
 			if session_id == pre_clear_session_id:
 				return None  # replacement session not active yet; keep polling
-			return model, level
+			if model == target_model and level == "high":
+				return model, level
+			return None  # session replaced; restore still in flight, keep polling
 
-		final_model, final_level = wait_until(cleared_state, SETTLE_TIMEOUT, "session replacement")
+		try:
+			final_model, final_level = wait_until(cleared_state, SETTLE_TIMEOUT, "session replacement")
+		except TimeoutError:
+			fail(
+				f"expected {target_model}/high after /clear, "
+				f"last saw {last_state['model']}/{last_state['level']} "
+				"(session replacement may not have completed)"
+			)
 		print("after /clear:", final_model, "thinking:", final_level)
-
-		if final_model != target_model or final_level != "high":
-			fail(f"expected {target_model}/high, got {final_model}/{final_level}")
 
 		print("RESULT: PASS - model and thinking level preserved across /clear")
 	finally:

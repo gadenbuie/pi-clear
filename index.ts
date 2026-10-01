@@ -33,12 +33,9 @@ interface ClearHandoff {
 	provider: string;
 	modelId: string;
 	thinkingLevel?: string;
-	/** When the handoff was written; stale handoffs are ignored. */
-	createdAt: number;
 }
 
 const HANDOFF_KEY = "__pi_clear_handoff__";
-const HANDOFF_TTL_MS = 30_000;
 
 const THINKING_LEVELS = [
 	"off",
@@ -83,7 +80,6 @@ export default function (pi: ExtensionAPI) {
 						provider: model.provider,
 						modelId: model.id,
 						thinkingLevel: ctx.thinkingLevel,
-						createdAt: Date.now(),
 					});
 				}
 
@@ -106,7 +102,6 @@ export default function (pi: ExtensionAPI) {
 
 		const handoff = takeHandoff();
 		if (!handoff) return;
-		if (Date.now() - handoff.createdAt > HANDOFF_TTL_MS) return;
 
 		try {
 			const model = ctx.modelRegistry.find(handoff.provider, handoff.modelId);

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Model handoff now uses in-process memory (`globalThis`) instead of a temp file, removing cross-process interference, stale-file pickup, and symlink-based tampering risks.
-- Handoffs are consumed once, cleared when `/clear` finishes, and ignored when stale.
+- Handoffs are consumed once and cleared when `/clear` finishes, so they can never apply to a later, unrelated `/new`.
 - `/clear` no longer writes a handoff when no model is active.
 - `session_start` restoration errors are caught and reported as warnings.
 - Smoke test derives paths from its own location, uses a temp log file, polls on session ID instead of fixed sleeps, and exits non-zero on failure.
