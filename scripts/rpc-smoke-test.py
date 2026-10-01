@@ -160,24 +160,33 @@ def main():
 		# restored model/thinking level are applied. The prompt response only
 		# confirms preflight, and session_start's restore is asynchronous, so a
 		# changed sessionId alone doesn't prove restoration finished.
-		last_state = {"model": None, "level": None}
+		# The expected thinking level is whatever was active before /clear, not
+		# a literal — pi may clamp the level for the target model.
+		last_state = {"model": None, "level": None, "session_id": None}
 
 		def cleared_state():
-			model, level, session_id = rpc.get_state()
-			last_state.update(model=model, level=level)
+			try:
+				model, level, session_id = rpc.get_state(timeout=5)
+			except TimeoutError:
+				return None  # one get_state attempt hung; keep polling
+			except RuntimeError as err:
+				fail(f"replacement session has no model: {err}")
+			last_state.update(model=model, level=level, session_id=session_id)
 			if session_id == pre_clear_session_id:
 				return None  # replacement session not active yet; keep polling
-			if model == target_model and level == "high":
+			if model == target_model and level == switched_level:
 				return model, level
 			return None  # session replaced; restore still in flight, keep polling
 
 		try:
 			final_model, final_level = wait_until(cleared_state, SETTLE_TIMEOUT, "session replacement")
 		except TimeoutError:
+			if last_state["session_id"] == pre_clear_session_id:
+				fail(f"session was never replaced after /clear; last saw {last_state['model']}/{last_state['level']}")
 			fail(
-				f"expected {target_model}/high after /clear, "
-				f"last saw {last_state['model']}/{last_state['level']} "
-				"(session replacement may not have completed)"
+				f"session was replaced but restore not applied: "
+				f"expected {target_model}/{switched_level}, "
+				f"last saw {last_state['model']}/{last_state['level']}"
 			)
 		print("after /clear:", final_model, "thinking:", final_level)
 
