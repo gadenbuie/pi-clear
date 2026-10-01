@@ -43,12 +43,12 @@ Because the model is applied with `pi.setModel()`, it's recorded in the new sess
 ## Notes
 
 - `/clear` only registers the slash command; it does not bind a keyboard shortcut, so it won't conflict with other extensions (such as `pi-mono-clear`, which uses `Ctrl+Shift+L`).
-- The model handoff happens through a small JSON file in the OS temp directory, validated against the previous session file. Stale files are harmless: they only apply when the session file matches.
+- The model handoff is in-process only: it never touches the filesystem, is invisible to other pi processes, and is discarded if pi exits between clearing and restoring.
 - Like `/new`, `/clear` does not carry over conversation history, compaction summaries, or session name.
 
 ## How it works
 
-pi tears down the current runtime when a session is replaced, and extension instances are recreated for the new session. Session-bound objects can't be reused across that boundary, and the post-switch context has no model setter. So `/clear` captures the model as plain data into a handoff file, and the new session's extension instance picks it up on `session_start` (reason `new`) and applies it with `pi.setModel()`. The handoff file records which session file issued it so it can never apply to the wrong session.
+pi tears down the current runtime when a session is replaced, and extension instances are recreated for the new session. Session-bound objects can't be reused across that boundary, and the post-switch context has no model setter — but the replacement happens within the same process. So `/clear` captures the model as plain data in a `globalThis` property, and the new session's extension instance consumes it on `session_start` (reason `new`) and applies it with `pi.setModel()`. The handoff is consumed exactly once, so it can never leak into a later session.
 
 ## Development
 

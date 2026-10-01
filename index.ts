@@ -16,33 +16,26 @@
  *
  * Mechanism:
  *   1. The `/clear` handler captures the active model (provider + id) and
- *      thinking level as plain data and writes them to a small handoff file
- *      in the OS temp directory. Plain data is required because session
- *      replacement tears down the current runtime and stale session-bound
- *      objects throw when touched.
- *   2. `ctx.newSession()` replaces the session. New extension instances are
- *      created for the replacement session.
- *   3. The new instance's `session_start` handler (reason: "new") matches the
- *      handoff file's `previousSessionFile` against the event's
- *      `previousSessionFile`, then applies the captured model and thinking
- *      level via `pi.setModel()` / `pi.setThinkingLevel()`, which record them
- *      in the new session so they also survive `/resume`.
+ *      thinking level as plain data into a `globalThis` property. Session
+ *      replacement (`ctx.newSession()`) tears down the current runtime and
+ *      recreates extension instances, but stays within the same process, so
+ *      a `globalThis` property safely crosses that boundary while remaining
+ *      invisible to other pi processes and dying with crashes.
+ *   2. The new instance's `session_start` handler (reason: "new") consumes
+ *      the handoff and applies the captured model and thinking level via
+ *      `pi.setModel()` / `pi.setThinkingLevel()`, which record them in the
+ *      new session so they also survive `/resume`.
  */
 
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 interface ClearHandoff {
-	/** Session file `/clear` was invoked from; used to validate the handoff. */
-	previousSessionFile?: string | null;
-	provider?: string;
-	modelId?: string;
+	provider: string;
+	modelId: string;
 	thinkingLevel?: string;
 }
 
-const HANDOFF_FILE = path.join(os.tmpdir(), "pi-clear-handoff.json");
+const HANDOFF_KEY = "__pi_clear_handoff__";
 
 const THINKING_LEVELS = [
 	"off",
@@ -59,21 +52,16 @@ function isThinkingLevel(value: string): value is ThinkingLevel {
 	return (THINKING_LEVELS as readonly string[]).includes(value);
 }
 
-function readHandoff(): ClearHandoff | undefined {
-	try {
-		const handoff = JSON.parse(fs.readFileSync(HANDOFF_FILE, "utf8")) as ClearHandoff;
-		return typeof handoff === "object" && handoff !== null ? handoff : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
 function writeHandoff(handoff: ClearHandoff): void {
-	fs.writeFileSync(HANDOFF_FILE, JSON.stringify(handoff));
+	(globalThis as Record<string, unknown>)[HANDOFF_KEY] = handoff;
 }
 
-function clearHandoff(): void {
-	fs.rmSync(HANDOFF_FILE, { force: true });
+/** Consume the handoff: read it and remove it so it can only apply once. */
+function takeHandoff(): ClearHandoff | undefined {
+	const store = globalThis as Record<string, unknown>;
+	const handoff = store[HANDOFF_KEY];
+	delete store[HANDOFF_KEY];
+	return handoff as ClearHandoff | undefined;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -85,21 +73,23 @@ export default function (pi: ExtensionAPI) {
 					await ctx.waitForIdle();
 				}
 
-				// Capture plain data only: it must survive session replacement.
-				writeHandoff({
-					previousSessionFile: ctx.sessionManager.getSessionFile() ?? null,
-					provider: ctx.model?.provider,
-					modelId: ctx.model?.id,
-					thinkingLevel: ctx.thinkingLevel,
-				});
+				const { model } = ctx;
+				if (model) {
+					// Capture plain data only: it must survive session replacement.
+					writeHandoff({
+						provider: model.provider,
+						modelId: model.id,
+						thinkingLevel: ctx.thinkingLevel,
+					});
+				}
 
 				const result = await ctx.newSession();
 				if (result.cancelled) {
-					clearHandoff();
+					takeHandoff();
 					ctx.ui.notify("Clear cancelled by extension", "warning");
 				}
 			} catch (err) {
-				clearHandoff();
+				takeHandoff();
 				ctx.ui.notify(`Clear failed: ${err instanceof Error ? err.message : String(err)}`, "error");
 			}
 		},
@@ -108,27 +98,30 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (event, ctx) => {
 		if (event.reason !== "new") return;
 
-		const handoff = readHandoff();
+		const handoff = takeHandoff();
 		if (!handoff) return;
-		if ((handoff.previousSessionFile ?? null) !== (event.previousSessionFile ?? null)) return;
-		clearHandoff();
 
-		if (!handoff.provider || !handoff.modelId) return;
+		try {
+			const model = ctx.modelRegistry.find(handoff.provider, handoff.modelId);
+			if (!model) {
+				ctx.ui.notify(`pi-clear: model ${handoff.provider}/${handoff.modelId} is no longer available`, "warning");
+				return;
+			}
 
-		const model = ctx.modelRegistry.find(handoff.provider, handoff.modelId);
-		if (!model) {
-			ctx.ui.notify(`pi-clear: model ${handoff.provider}/${handoff.modelId} is no longer available`, "warning");
-			return;
-		}
+			const applied = await pi.setModel(model);
+			if (!applied) {
+				ctx.ui.notify(`pi-clear: no auth configured for ${handoff.provider}/${handoff.modelId}`, "warning");
+				return;
+			}
 
-		const applied = await pi.setModel(model);
-		if (!applied) {
-			ctx.ui.notify(`pi-clear: no auth configured for ${handoff.provider}/${handoff.modelId}`, "warning");
-			return;
-		}
-
-		if (handoff.thinkingLevel && isThinkingLevel(handoff.thinkingLevel)) {
-			pi.setThinkingLevel(handoff.thinkingLevel);
+			if (handoff.thinkingLevel && isThinkingLevel(handoff.thinkingLevel)) {
+				pi.setThinkingLevel(handoff.thinkingLevel);
+			}
+		} catch (err) {
+			ctx.ui.notify(
+				`pi-clear: could not restore model ${handoff.provider}/${handoff.modelId}: ${err instanceof Error ? err.message : String(err)}`,
+				"warning",
+			);
 		}
 	});
 }
