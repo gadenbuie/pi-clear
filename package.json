@@ -1,0 +1,31 @@
+{
+	"name": "@gadenbuie/pi-clear",
+	"version": "0.1.0",
+	"description": "Pi extension that starts a fresh session with /clear while keeping your current model and thinking level",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"clear",
+		"session",
+		"model"
+	],
+	"license": "MIT",
+	"author": "Garrick Aden-Buie (https://github.com/gadenbuie)",
+	"type": "module",
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/gadenbuie/pi-clear.git"
+	},
+	"bugs": {
+		"url": "https://github.com/gadenbuie/pi-clear/issues"
+	},
+	"homepage": "https://github.com/gadenbuie/pi-clear#readme"
+}
