@@ -1,5 +1,5 @@
 {
-	"name": "@gadenbuie/pi-clear",
+	"name": "@grrrck/pi-clear",
 	"version": "0.1.0",
 	"description": "Pi extension that starts a fresh session with /clear while keeping your current model and thinking level",
 	"keywords": [
@@ -10,7 +10,7 @@
 		"model"
 	],
 	"license": "MIT",
-	"author": "Garrick Aden-Buie (https://github.com/gadenbuie)",
+	"author": "Garrick Aden-Buie (https://garrickadenbuie.com)",
 	"type": "module",
 	"peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
