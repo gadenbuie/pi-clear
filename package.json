@@ -1,6 +1,6 @@
 {
 	"name": "@grrrck/pi-clear",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Pi extension that starts a fresh session with /clear while keeping your current model and thinking level",
 	"keywords": [
 		"pi-package",

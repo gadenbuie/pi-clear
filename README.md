@@ -13,13 +13,13 @@ If you switched models mid-session — with `/model`, model cycling, or an exten
 ## Install
 
 ```sh
-pi install npm:@gadenbuie/pi-clear
+pi install npm:@grrrck/pi-clear
 ```
 
 Or try it without installing:
 
 ```sh
-pi -e npm:@gadenbuie/pi-clear
+pi -e npm:@grrrck/pi-clear
 ```
 
 ## Usage
