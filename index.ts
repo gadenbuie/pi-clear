@@ -37,21 +37,6 @@ interface ClearHandoff {
 
 const HANDOFF_KEY = "__pi_clear_handoff__";
 
-const THINKING_LEVELS = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-] as const;
-type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-
-function isThinkingLevel(value: string): value is ThinkingLevel {
-	return (THINKING_LEVELS as readonly string[]).includes(value);
-}
-
 function writeHandoff(handoff: ClearHandoff): void {
 	(globalThis as Record<string, unknown>)[HANDOFF_KEY] = handoff;
 }
@@ -70,6 +55,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			try {
 				if (!ctx.isIdle()) {
+					ctx.ui.notify("Waiting for the agent to finish before clearing", "info");
 					await ctx.waitForIdle();
 				}
 
@@ -116,8 +102,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			if (handoff.thinkingLevel && isThinkingLevel(handoff.thinkingLevel)) {
-				pi.setThinkingLevel(handoff.thinkingLevel);
+			if (handoff.thinkingLevel) {
+				await pi.setThinkingLevel(handoff.thinkingLevel);
 			}
 		} catch (err) {
 			ctx.ui.notify(

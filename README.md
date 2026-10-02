@@ -32,7 +32,7 @@ pi -e npm:@grrrck/pi-clear
 
 When `/clear` runs, the extension:
 
-1. waits for the agent to become idle if needed
+1. waits for the agent to become idle if needed, notifying you that it's waiting
 2. captures the active model and thinking level
 3. starts a new session via `ctx.newSession()`
 4. restores the captured model and thinking level in the new session
