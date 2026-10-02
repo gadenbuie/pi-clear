@@ -13,19 +13,20 @@
 	"author": "Garrick Aden-Buie (https://github.com/gadenbuie)",
 	"type": "module",
 	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*"
 	},
 	"pi": {
-		"extensions": [
-			"./index.ts"
+    "extensions": [
+      "./index.ts"
 		]
 	},
 	"repository": {
-		"type": "git",
+    "type": "git",
 		"url": "git+https://github.com/gadenbuie/pi-clear.git"
 	},
 	"bugs": {
-		"url": "https://github.com/gadenbuie/pi-clear/issues"
+    "url": "https://github.com/gadenbuie/pi-clear/issues"
 	},
-	"homepage": "https://github.com/gadenbuie/pi-clear#readme"
+	"homepage": "https://github.com/gadenbuie/pi-clear#readme",
+  "files": ["index.ts", "README.md", "LICENSE", "CHANGELOG.md"]
 }
