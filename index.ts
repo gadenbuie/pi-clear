@@ -44,6 +44,8 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import { Container, Input, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
 
 // Model and thinking-level types, derived from the API surface because the
 // package root does not re-export them directly.
@@ -91,6 +93,239 @@ function sameModel(a: AnyModel | undefined, b: AnyModel | undefined): boolean {
 
 function modelLabel(model: AnyModel, current: AnyModel | undefined): string {
 	return `${model.provider}/${model.id}${sameModel(model, current) ? "  (current)" : ""}`;
+}
+
+function orderCurrentFirst(models: AnyModel[], current: AnyModel | undefined): AnyModel[] {
+	if (!current) return models;
+	return [current, ...models.filter((m) => !sameModel(m, current))].filter((m) =>
+		models.some((c) => sameModel(c, m)),
+	);
+}
+
+/** A hand-off destination: the model plus an optional scope-pinned thinking level. */
+interface PickedModel {
+	model: AnyModel;
+	thinkingLevel?: ThinkingLevel;
+}
+
+function orderEntriesCurrentFirst<T extends { model: AnyModel }>(
+	entries: T[],
+	current: AnyModel | undefined,
+): T[] {
+	if (!current) return entries;
+	const first = entries.filter((entry) => sameModel(entry.model, current));
+	const rest = entries.filter((entry) => !sameModel(entry.model, current));
+	return [...first, ...rest];
+}
+
+async function selectModel(
+	ctx: ExtensionContext,
+	models: AnyModel[],
+	title: string,
+	current: AnyModel | undefined,
+): Promise<AnyModel | undefined> {
+	if (models.length === 1) return models[0];
+	const ordered = orderCurrentFirst(models, current);
+	const labels = ordered.map((m) => modelLabel(m, current));
+	const chosen = await ctx.ui.select(title, labels);
+	if (chosen === undefined) return undefined;
+	return ordered[labels.indexOf(chosen)];
+}
+
+/**
+ * Thinking level picker with the active level preselected, so Enter accepts
+ * the current setting.
+ */
+async function selectThinkingLevel(ctx: ExtensionContext): Promise<ThinkingLevel | undefined> {
+	const current = ctx.thinkingLevel;
+	const ordered = current
+		? [current, ...THINKING_LEVELS.filter((level) => level !== current)]
+		: [...THINKING_LEVELS];
+	const labels = ordered.map((level) => `${level}${level === current ? "  (current)" : ""}`);
+	const chosen = await ctx.ui.select("Thinking level", labels);
+	if (chosen === undefined) return undefined;
+	return ordered[labels.indexOf(chosen)];
+}
+
+/**
+ * Non-interactive fallback (RPC mode has no custom components): scoped
+ * models in one dialog when scoping is configured, otherwise a two-level
+ * provider → model pick over the auth-configured catalogue.
+ */
+async function pickTargetModelFallback(ctx: ExtensionContext): Promise<PickedModel | undefined> {
+	const current = ctx.model;
+	const scoped = ctx.scopedModels.map((scoped) => scoped.model);
+
+	if (scoped.length > 0) {
+		const model = await selectModel(ctx, scoped, "Hand off to model", current);
+		return model ? { model } : undefined;
+	}
+
+	const available = ctx.modelRegistry.getAvailable();
+	const usable = available.filter((m) => ctx.modelRegistry.hasConfiguredAuth(m));
+	const models = usable.length > 0 ? usable : available;
+	if (models.length === 0) {
+		ctx.ui.notify("No models available to hand off to", "error");
+		return undefined;
+	}
+
+	const byProvider = new Map<string, AnyModel[]>();
+	for (const model of models) {
+		const list = byProvider.get(model.provider) ?? [];
+		list.push(model);
+		byProvider.set(model.provider, list);
+	}
+	const providers = [...byProvider.keys()].sort();
+	if (current && byProvider.has(current.provider)) {
+		providers.splice(providers.indexOf(current.provider), 1);
+		providers.unshift(current.provider);
+	}
+
+	const provider =
+		providers.length === 1
+			? providers[0]
+			: await ctx.ui.select(
+					"Hand off to provider",
+					providers.map((p) => `${p}  (${byProvider.get(p)!.length} models)`),
+				);
+	if (provider === undefined) return undefined;
+	const providerName = provider.split("  (")[0];
+
+	const model = await selectModel(ctx, byProvider.get(providerName) ?? [], "Hand off to model", current);
+	return model ? { model } : undefined;
+}
+
+/**
+ * `/model`-style model picker (TUI mode only): a searchable list with Tab to
+ * toggle between the session's scoped models and the full catalogue.
+ */
+async function pickTargetModelTui(ctx: ExtensionContext): Promise<PickedModel | undefined> {
+	const current = ctx.model;
+	const allEntries: PickedModel[] = ctx.modelRegistry.getAvailable().map((model) => ({ model }));
+	if (allEntries.length === 0) {
+		ctx.ui.notify("No models available to hand off to", "error");
+		return undefined;
+	}
+
+	// Scoped entries may pin a thinking level (`provider/model:high`); dedupe
+	// by provider/id, keeping the first entry's pinned level.
+	const scopedByKey = new Map<string, PickedModel>();
+	for (const scoped of ctx.scopedModels) {
+		const key = `${scoped.model.provider}/${scoped.model.id}`;
+		if (!scopedByKey.has(key)) {
+			scopedByKey.set(key, { model: scoped.model, thinkingLevel: scoped.thinkingLevel });
+		}
+	}
+	const scopedEntries = [...scopedByKey.values()];
+
+	if (allEntries.length === 1) return allEntries[0];
+
+	const result = await ctx.ui.custom<PickedModel | null>((tui, theme, kb, done) => {
+		const MAX_VISIBLE = 12;
+		let scope: "scoped" | "all" = scopedEntries.length > 0 ? "scoped" : "all";
+		let selectList: SelectList;
+
+		const listTheme = {
+			selectedPrefix: (text: string) => theme.fg("accent", text),
+			selectedText: (text: string) => theme.fg("accent", text),
+			description: (text: string) => theme.fg("muted", text),
+			scrollInfo: (text: string) => theme.fg("dim", text),
+			noMatch: (text: string) => theme.fg("warning", text),
+		};
+
+		const entriesForScope = () => (scope === "scoped" ? scopedEntries : allEntries);
+
+		const makeList = () => {
+			const entries = orderEntriesCurrentFirst(entriesForScope(), current);
+			const items: SelectItem[] = entries.map((entry, index) => ({
+				value: String(index),
+				label: modelLabel(entry.model, current),
+				description: entry.model.name,
+			}));
+			const list = new SelectList(items, MAX_VISIBLE, listTheme);
+			list.onSelect = (item) => done(entries[Number(item.value)] ?? null);
+			list.onCancel = () => done(null);
+			return list;
+		};
+
+		const container = new Container();
+		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+		const header = new Text("");
+		container.addChild(header);
+		const searchInput = new Input({ placeholder: "Type to filter" });
+		container.addChild(searchInput);
+		selectList = makeList();
+		container.addChild(selectList);
+		const hint = new Text("");
+		container.addChild(hint);
+		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+		const updateChrome = () => {
+			header.setText(
+				theme.fg(
+					"accent",
+					theme.bold(
+						`Hand off to model — ${scope === "scoped" ? `scoped (${scopedEntries.length})` : `all (${allEntries.length})`}`,
+					),
+				),
+			);
+			const parts = ["type to filter", "enter select", "esc cancel"];
+			if (scopedEntries.length > 0) {
+				parts.unshift(`tab → ${scope === "scoped" ? "all models" : "scoped"}`);
+			}
+			hint.setText(theme.fg("dim", parts.join(" • ")));
+		};
+		updateChrome();
+
+		return {
+			render(width: number) {
+				return container.render(width);
+			},
+			invalidate() {
+				container.invalidate();
+			},
+			handleInput(data: string) {
+				if (scopedEntries.length > 0 && kb.matches(data, "tui.input.tab")) {
+					scope = scope === "scoped" ? "all" : "scoped";
+					container.removeChild(selectList);
+					selectList = makeList();
+					container.addChild(selectList);
+					selectList.setFilter(searchInput.getValue());
+					updateChrome();
+					tui.requestRender();
+					return;
+				}
+				if (
+					kb.matches(data, "tui.select.up") ||
+					kb.matches(data, "tui.select.down") ||
+					kb.matches(data, "tui.select.confirm") ||
+					kb.matches(data, "tui.select.cancel")
+				) {
+					selectList.handleInput(data);
+					tui.requestRender();
+					return;
+				}
+				searchInput.handleInput(data);
+				selectList.setFilter(searchInput.getValue());
+				tui.requestRender();
+			},
+		};
+	});
+
+	return result ?? undefined;
+}
+
+/**
+ * Pick the hand-off destination model without flooding the screen.
+ *
+ * TUI mode gets a `/model`-style searchable picker with Tab to toggle
+ * between scoped and all models; other modes fall back to plain dialogs.
+ */
+async function pickTargetModel(ctx: ExtensionContext): Promise<PickedModel | undefined> {
+	if (ctx.mode === "tui") {
+		return pickTargetModelTui(ctx);
+	}
+	return pickTargetModelFallback(ctx);
 }
 
 /** Extract the text content of an agent message, ignoring thinking blocks and tool calls. */
@@ -206,25 +441,11 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				// 1. Pick the destination model.
-				const available = ctx.modelRegistry.getAvailable();
-				const usable = available.filter((m) => ctx.modelRegistry.hasConfiguredAuth(m));
-				const models = usable.length > 0 ? usable : available;
-				if (models.length === 0) {
-					ctx.ui.notify("No models available to hand off to", "error");
-					return;
-				}
-				const current = ctx.model;
-				const ordered = current
-					? [current, ...models.filter((m) => !sameModel(m, current))]
-					: models;
-				const labels = ordered.map((m) => modelLabel(m, current));
-				const chosen = await ctx.ui.select("Hand off to model", labels);
-				if (chosen === undefined) return;
-				const target = ordered[labels.indexOf(chosen)];
+				const target = await pickTargetModel(ctx);
 				if (!target) return;
 
-				// 2. Pick the thinking level.
-				const level = await ctx.ui.select("Thinking level", [...THINKING_LEVELS]);
+				// 2. Pick the thinking level (a scoped `model:level` entry pins it).
+				const level = target.thinkingLevel ?? (await selectThinkingLevel(ctx));
 				if (level === undefined) return;
 
 				// 3. Collect steering instructions, pre-filled from /hand-off args.
@@ -255,8 +476,8 @@ export default function (pi: ExtensionAPI) {
 
 				// 5. Carry everything across session replacement as plain data.
 				writeHandoff({
-					provider: target.provider,
-					modelId: target.id,
+					provider: target.model.provider,
+					modelId: target.model.id,
 					thinkingLevel: level as ThinkingLevel,
 					prompt: capturedPrompt,
 				});

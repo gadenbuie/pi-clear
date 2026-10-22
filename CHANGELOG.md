@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `/hand-off` dialogs now default to the current model and thinking level, so pressing Enter through the flow keeps the current settings.
+- `/hand-off` model picker now prefers the session's scoped model set (`--models` / `enabledModels`, the same list `/scoped-models` shows) instead of listing every available model. Without scoping, it falls back to a two-level provider → model pick so the dialog stays small.
+
 ## [0.3.0] - 2026-10-22
 
 ### Added

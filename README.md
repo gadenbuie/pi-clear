@@ -49,7 +49,7 @@ Because the model is applied with `pi.setModel()`, it's recorded in the new sess
 When `/hand-off` runs, the extension:
 
 1. waits for the agent to become idle if needed
-2. opens a model picker (models with configured auth, current model first), then a thinking level picker, then a steering editor pre-filled with any text you typed after `/hand-off`
+2. opens a model picker, then a thinking level picker, then a steering editor pre-filled with any text you typed after `/hand-off`. Defaults are sensible: the current model and thinking level are preselected, so pressing Enter at each step keeps them. The model picker respects your session's model scoping (`--models` / `enabledModels`, the same set `/scoped-models` shows); without scoping it falls back to a two-level provider → model pick so the dialog never floods the screen
 3. sends the current agent a message asking it to write its **next message as the hand-off prompt** — instructions to the next agent, with no preamble or postamble
 4. captures that final assistant message, starts a new session, applies the model and thinking level you picked, and inserts the hand-off prompt into the editor via `ctx.ui.setEditorText()`
 5. stops there: the prompt sits in the editor for you to review, edit, and submit yourself
