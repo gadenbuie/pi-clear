@@ -95,27 +95,29 @@ function modelLabel(model: AnyModel, current: AnyModel | undefined): string {
 	return `${model.provider}/${model.id}${sameModel(model, current) ? "  (current)" : ""}`;
 }
 
-function orderCurrentFirst(models: AnyModel[], current: AnyModel | undefined): AnyModel[] {
-	if (!current) return models;
-	return [current, ...models.filter((m) => !sameModel(m, current))].filter((m) =>
-		models.some((c) => sameModel(c, m)),
-	);
+/** Match a dialog result against option labels, tolerating "  (current)"-style decorations. */
+function labelIndex(chosen: string, labels: string[]): number {
+	const exact = labels.indexOf(chosen);
+	if (exact !== -1) return exact;
+	const bare = chosen.split("  (")[0];
+	return labels.findIndex((label) => label === bare || label.startsWith(`${bare}  (`));
+}
+
+function orderCurrentFirst<T>(
+	items: T[],
+	current: AnyModel | undefined,
+	getModel: (item: T) => AnyModel,
+): T[] {
+	if (!current) return items;
+	const first = items.filter((item) => sameModel(getModel(item), current));
+	const rest = items.filter((item) => !sameModel(getModel(item), current));
+	return [...first, ...rest];
 }
 
 /** A hand-off destination: the model plus an optional scope-pinned thinking level. */
 interface PickedModel {
 	model: AnyModel;
 	thinkingLevel?: ThinkingLevel;
-}
-
-function orderEntriesCurrentFirst<T extends { model: AnyModel }>(
-	entries: T[],
-	current: AnyModel | undefined,
-): T[] {
-	if (!current) return entries;
-	const first = entries.filter((entry) => sameModel(entry.model, current));
-	const rest = entries.filter((entry) => !sameModel(entry.model, current));
-	return [...first, ...rest];
 }
 
 async function selectModel(
@@ -125,11 +127,12 @@ async function selectModel(
 	current: AnyModel | undefined,
 ): Promise<AnyModel | undefined> {
 	if (models.length === 1) return models[0];
-	const ordered = orderCurrentFirst(models, current);
+	const ordered = orderCurrentFirst(models, current, (m) => m);
 	const labels = ordered.map((m) => modelLabel(m, current));
 	const chosen = await ctx.ui.select(title, labels);
 	if (chosen === undefined) return undefined;
-	return ordered[labels.indexOf(chosen)];
+	const index = labelIndex(chosen, labels);
+	return index === -1 ? undefined : ordered[index];
 }
 
 /**
@@ -144,7 +147,8 @@ async function selectThinkingLevel(ctx: ExtensionContext): Promise<ThinkingLevel
 	const labels = ordered.map((level) => `${level}${level === current ? "  (current)" : ""}`);
 	const chosen = await ctx.ui.select("Thinking level", labels);
 	if (chosen === undefined) return undefined;
-	return ordered[labels.indexOf(chosen)];
+	const index = labelIndex(chosen, labels);
+	return index === -1 ? undefined : ordered[index];
 }
 
 /**
@@ -157,7 +161,10 @@ async function pickTargetModelFallback(ctx: ExtensionContext): Promise<PickedMod
 	const scoped = ctx.scopedModels.map((scoped) => scoped.model);
 
 	if (scoped.length > 0) {
-		const model = await selectModel(ctx, scoped, "Hand off to model", current);
+		// Keep the current model selectable and preselected even when scoping
+		// excludes it.
+		const models = current && !scoped.some((m) => sameModel(m, current)) ? [current, ...scoped] : scoped;
+		const model = await selectModel(ctx, models, "Hand off to model", current);
 		return model ? { model } : undefined;
 	}
 
@@ -181,15 +188,13 @@ async function pickTargetModelFallback(ctx: ExtensionContext): Promise<PickedMod
 		providers.unshift(current.provider);
 	}
 
-	const provider =
-		providers.length === 1
-			? providers[0]
-			: await ctx.ui.select(
-					"Hand off to provider",
-					providers.map((p) => `${p}  (${byProvider.get(p)!.length} models)`),
-				);
-	if (provider === undefined) return undefined;
-	const providerName = provider.split("  (")[0];
+	const providerLabels = providers.map((p) => `${p}  (${byProvider.get(p)!.length} models)`);
+	const providerChoice =
+		providers.length === 1 ? providerLabels[0] : await ctx.ui.select("Hand off to provider", providerLabels);
+	if (providerChoice === undefined) return undefined;
+	const providerIndex = labelIndex(providerChoice, providerLabels);
+	if (providerIndex === -1) return undefined;
+	const providerName = providers[providerIndex];
 
 	const model = await selectModel(ctx, byProvider.get(providerName) ?? [], "Hand off to model", current);
 	return model ? { model } : undefined;
@@ -236,7 +241,7 @@ async function pickTargetModelTui(ctx: ExtensionContext): Promise<PickedModel | 
 		const entriesForScope = () => (scope === "scoped" ? scopedEntries : allEntries);
 
 		const makeList = () => {
-			const entries = orderEntriesCurrentFirst(entriesForScope(), current);
+			const entries = orderCurrentFirst(entriesForScope(), current, (entry) => entry.model);
 			const items: SelectItem[] = entries.map((entry, index) => ({
 				value: String(index),
 				label: modelLabel(entry.model, current),
@@ -365,6 +370,7 @@ export default function (pi: ExtensionAPI) {
 	// so it never leaks into a replacement session.
 	let awaitingHandoff = false;
 	let capturedPrompt: string | undefined;
+	let flowInProgress = false;
 
 	/**
 	 * Apply a captured model and thinking level, reporting problems as
@@ -401,6 +407,10 @@ export default function (pi: ExtensionAPI) {
 		description: "Start a fresh session, keeping the current model and thinking level",
 		handler: async (_args, ctx) => {
 			try {
+				if (flowInProgress) {
+					ctx.ui.notify("Hand-off in progress; wait for it to finish", "warning");
+					return;
+				}
 				if (!ctx.isIdle()) {
 					ctx.ui.notify("Waiting for the agent to finish before clearing", "info");
 					await ctx.waitForIdle();
@@ -435,6 +445,11 @@ export default function (pi: ExtensionAPI) {
 			"Hand the conversation to another model: pick the next model and thinking level, the agent writes the hand-off prompt, and it lands pre-filled in a fresh session's editor",
 		handler: async (args, ctx) => {
 			try {
+				if (flowInProgress) {
+					ctx.ui.notify("A hand-off is already in progress", "warning");
+					return;
+				}
+				flowInProgress = true;
 				if (!ctx.isIdle()) {
 					ctx.ui.notify("Waiting for the agent to finish before handing off", "info");
 					await ctx.waitForIdle();
@@ -478,7 +493,7 @@ export default function (pi: ExtensionAPI) {
 				writeHandoff({
 					provider: target.model.provider,
 					modelId: target.model.id,
-					thinkingLevel: level as ThinkingLevel,
+					thinkingLevel: level,
 					prompt: capturedPrompt,
 				});
 
@@ -493,6 +508,8 @@ export default function (pi: ExtensionAPI) {
 				takeHandoff();
 				awaitingHandoff = false;
 				ctx.ui.notify(`Hand-off failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+			} finally {
+				flowInProgress = false;
 			}
 		},
 	});
@@ -503,6 +520,9 @@ export default function (pi: ExtensionAPI) {
 		for (let i = event.messages.length - 1; i >= 0; i--) {
 			const message = event.messages[i];
 			if (message.role === "assistant") {
+				// Only accept a cleanly finished message: agent_end also fires on
+				// abort and error, where the text is partial or absent.
+				if ((message as { stopReason?: string }).stopReason !== "stop") break;
 				const text = messageText(message as { role: string; content: string | Array<{ type: string; text?: string }> });
 				if (text.trim()) capturedPrompt = text.trim();
 				break;

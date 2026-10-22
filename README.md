@@ -49,14 +49,16 @@ Because the model is applied with `pi.setModel()`, it's recorded in the new sess
 When `/hand-off` runs, the extension:
 
 1. waits for the agent to become idle if needed
-2. opens a model picker, then a thinking level picker, then a steering editor pre-filled with any text you typed after `/hand-off`. Defaults are sensible: the current model and thinking level are preselected, so pressing Enter at each step keeps them. The model picker respects your session's model scoping (`--models` / `enabledModels`, the same set `/scoped-models` shows); without scoping it falls back to a two-level provider → model pick so the dialog never floods the screen
+2. opens a model picker, then a thinking level picker, then a steering editor pre-filled with any text you typed after `/hand-off`. Defaults are sensible: the current model and thinking level are preselected, so pressing Enter at each step keeps them. The model picker respects your session's model scoping (`--models` / `enabledModels`, the same set `/scoped-models` shows) and offers a Tab toggle between scoped and all models. In non-TUI modes it falls back to plain dialogs: the scoped list when configured, otherwise a two-level provider → model pick so the dialog never floods the screen
 3. sends the current agent a message asking it to write its **next message as the hand-off prompt** — instructions to the next agent, with no preamble or postamble
 4. captures that final assistant message, starts a new session, applies the model and thinking level you picked, and inserts the hand-off prompt into the editor via `ctx.ui.setEditorText()`
 5. stops there: the prompt sits in the editor for you to review, edit, and submit yourself
 
 Cancelling any dialog aborts the hand-off before anything is sent to the agent. If the agent doesn't produce a hand-off prompt, the extension stays in the current session and reports an error.
 
-The `/hand-off` request is recorded in the current session's transcript, and the hand-off prompt becomes the first user message of the new session — so both sides of the hand are visible in their respective session histories.
+The `/hand-off` request is recorded in the current session's transcript, and the hand-off prompt sits in the new session's editor — it becomes the first user message once you review and submit it.
+
+Two limitations worth knowing: if you queue another message while the agent is writing the hand-off prompt, the capture may pick up the wrong response — avoid queueing during generation. And `/clear` and `/hand-off` guard against running at the same time.
 
 ## Notes
 

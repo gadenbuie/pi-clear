@@ -148,9 +148,22 @@ def main():
 		# response is checked at the end rather than awaited here.
 		prompt_request_id = rpc.send("prompt", message="/hand-off")
 
-		# Dialog 1: model select. Pick a model different from the current one.
+		# Dialog 1: model select — or provider select first when the session has
+		# no model scoping (the RPC fallback shows provider → model).
 		model_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
 		options = model_dialog.get("options") or []
+		if "provider" in model_dialog.get("title", ""):
+			initial_provider = initial_model.split("/")[0]
+			provider_label = next(
+				(o for o in options if o.split("  (")[0] == initial_provider),
+				None,
+			)
+			if not provider_label:
+				fail(f"current provider not offered in the provider dialog: {options}")
+			print("provider dialog answered:", provider_label)
+			rpc.respond_ui(model_dialog["id"], value=provider_label)
+			model_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+			options = model_dialog.get("options") or []
 		target_label = next(
 			(o for o in options if o.split("  (current)")[0] != initial_model),
 			None,
