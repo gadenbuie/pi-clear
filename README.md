@@ -1,6 +1,9 @@
 # pi-clear
 
-A [pi](https://github.com/earendil-works/pi) extension that adds a `/clear` command: start a fresh session **without losing your model**.
+A [pi](https://github.com/earendil-works/pi) extension with two commands:
+
+- `/clear` — start a fresh session **without losing your model**
+- `/hand-off` — hand the conversation to another model with a prompt written by the current agent
 
 ## Why?
 
@@ -26,9 +29,10 @@ pi -e npm:@grrrck/pi-clear
 
 ```text
 /clear
+/hand-off [steering instructions]
 ```
 
-## Behavior
+## `/clear` behavior
 
 When `/clear` runs, the extension:
 
@@ -40,6 +44,20 @@ When `/clear` runs, the extension:
 
 Because the model is applied with `pi.setModel()`, it's recorded in the new session's transcript — so it also survives `/resume`.
 
+## `/hand-off` behavior
+
+When `/hand-off` runs, the extension:
+
+1. waits for the agent to become idle if needed
+2. opens a model picker (models with configured auth, current model first), then a thinking level picker, then a steering editor pre-filled with any text you typed after `/hand-off`
+3. sends the current agent a message asking it to write its **next message as the hand-off prompt** — instructions to the next agent, with no preamble or postamble
+4. captures that final assistant message, starts a new session, applies the model and thinking level you picked, and inserts the hand-off prompt into the editor via `ctx.ui.setEditorText()`
+5. stops there: the prompt sits in the editor for you to review, edit, and submit yourself
+
+Cancelling any dialog aborts the hand-off before anything is sent to the agent. If the agent doesn't produce a hand-off prompt, the extension stays in the current session and reports an error.
+
+The `/hand-off` request is recorded in the current session's transcript, and the hand-off prompt becomes the first user message of the new session — so both sides of the hand are visible in their respective session histories.
+
 ## Notes
 
 - `/clear` only registers the slash command; it does not bind a keyboard shortcut, so it won't conflict with other extensions (such as `pi-mono-clear`, which uses `Ctrl+Shift+L`).
@@ -48,7 +66,9 @@ Because the model is applied with `pi.setModel()`, it's recorded in the new sess
 
 ## How it works
 
-pi tears down the current runtime when a session is replaced, and extension instances are recreated for the new session. Session-bound objects can't be reused across that boundary, and the post-switch context has no model setter — but the replacement happens within the same process. So `/clear` captures the model as plain data in a `globalThis` property, and the new session's extension instance consumes it on `session_start` (reason `new`) and applies it with `pi.setModel()`. The handoff is consumed exactly once, so it can never leak into a later session.
+pi tears down the current runtime when a session is replaced, and extension instances are recreated for the new session. Session-bound objects can't be reused across that boundary, and the post-switch context has no model setter — but the replacement happens within the same process. So both commands capture state as plain data in a `globalThis` property, and the new session's extension instance consumes it on `session_start` (reason `new`) and applies it with `pi.setModel()` (plus `ctx.ui.setEditorText()` for the hand-off prompt). The handoff is consumed exactly once, so it can never leak into a later session.
+
+`/hand-off` captures the agent's response by watching the `agent_end` event while the hand-off request is in flight, using per-instance state that dies with the session — only the final payload crosses into the new session via `globalThis`.
 
 ## Development
 
@@ -58,11 +78,14 @@ Load the extension directly for local testing:
 pi -e ./index.ts
 ```
 
-There's also an RPC smoke test that verifies the core behavior end-to-end: it starts pi in RPC mode, switches to a different model and thinking level, runs `/clear`, and asserts both survive the new session:
+There are also RPC smoke tests that verify the behavior end-to-end by starting pi in RPC mode:
 
 ```sh
-python3 scripts/rpc-smoke-test.py
+python3 scripts/rpc-smoke-test.py          # /clear keeps model + thinking level
+python3 scripts/rpc-handoff-smoke-test.py  # /hand-off full flow, dialogs included
 ```
+
+Both require at least two models with configured auth.
 
 ## Related extensions
 
