@@ -45,7 +45,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Container, Input, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
+import { Container, fuzzyFilter, Input, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
 
 // Model and thinking-level types, derived from the API surface because the
 // package root does not re-export them directly.
@@ -240,8 +240,10 @@ async function pickTargetModelTui(ctx: ExtensionContext): Promise<PickedModel | 
 
 		const entriesForScope = () => (scope === "scoped" ? scopedEntries : allEntries);
 
-		const makeList = () => {
-			const entries = orderCurrentFirst(entriesForScope(), current, (entry) => entry.model);
+		const makeList = (query = "") => {
+			const ordered = orderCurrentFirst(entriesForScope(), current, (entry) => entry.model);
+			// SelectList.setFilter() only prefix-matches item values, not labels.
+			const entries = fuzzyFilter(ordered, query, ({ model }) => `${model.provider} ${model.id} ${model.name}`);
 			const items: SelectItem[] = entries.map((entry, index) => ({
 				value: String(index),
 				label: modelLabel(entry.model, current),
@@ -259,8 +261,15 @@ async function pickTargetModelTui(ctx: ExtensionContext): Promise<PickedModel | 
 		container.addChild(header);
 		const searchInput = new Input({ placeholder: "Type to filter" });
 		container.addChild(searchInput);
+		const listContainer = new Container();
 		selectList = makeList();
-		container.addChild(selectList);
+		listContainer.addChild(selectList);
+		container.addChild(listContainer);
+		const updateList = () => {
+			selectList = makeList(searchInput.getValue());
+			listContainer.clear();
+			listContainer.addChild(selectList);
+		};
 		const hint = new Text("");
 		container.addChild(hint);
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
@@ -292,10 +301,7 @@ async function pickTargetModelTui(ctx: ExtensionContext): Promise<PickedModel | 
 			handleInput(data: string) {
 				if (scopedEntries.length > 0 && kb.matches(data, "tui.input.tab")) {
 					scope = scope === "scoped" ? "all" : "scoped";
-					container.removeChild(selectList);
-					selectList = makeList();
-					container.addChild(selectList);
-					selectList.setFilter(searchInput.getValue());
+					updateList();
 					updateChrome();
 					tui.requestRender();
 					return;
@@ -311,7 +317,7 @@ async function pickTargetModelTui(ctx: ExtensionContext): Promise<PickedModel | 
 					return;
 				}
 				searchInput.handleInput(data);
-				selectList.setFilter(searchInput.getValue());
+				updateList();
 				tui.requestRender();
 			},
 		};
