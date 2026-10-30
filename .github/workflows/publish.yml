@@ -152,55 +152,11 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # A re-run of the same release would try to stage a version that is
-      # already waiting in the queue, which npm rejects. This check is a best
-      # effort that in practice does not fire: the queue listing endpoint
-      # answers 401 to an OIDC token, so expect the notice below, not an
-      # answer. npm's own conflict error is the real backstop.
-      - name: Check whether this version is already staged
-        id: staged
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          echo "exists=false" >> "$GITHUB_OUTPUT"
-          if ! npm stage list "@grrrck/pi-clear" --json > staged.json 2> staged.err; then
-            echo "::notice::Could not read the stage queue; skipping this check."
-            cat staged.err staged.json 2>/dev/null || true
-            exit 0
-          fi
-          if node -e '
-            const fs = require("node:fs");
-            const want = process.env.VERSION;
-            let data;
-            try {
-              data = JSON.parse(fs.readFileSync("staged.json", "utf8"));
-            } catch {
-              process.exit(1);
-            }
-            // Match a `version` field, a shape that keys by version, or a
-            // bare version string. Prefix matches are deliberately not
-            // allowed, so 0.4 can never look like 0.4.0.
-            let found = false;
-            (function walk(node) {
-              if (found || !node) return;
-              if (Array.isArray(node)) return node.forEach(walk);
-              if (typeof node !== "object") return;
-              for (const [key, value] of Object.entries(node)) {
-                if (key === want || (key === "version" && value === want) || value === want) {
-                  found = true;
-                  return;
-                }
-                walk(value);
-              }
-            })(data);
-            process.exit(found ? 0 : 1);
-          '; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::@grrrck/pi-clear@${VERSION} is already in the stage queue; not staging again."
-          fi
-
+      # A version that is already published is the common re-run case. A
+      # version already sitting in the stage queue makes npm reject this step
+      # with a conflict; reject that staged version and re-run.
       - name: Stage the release
-        if: steps.published.outputs.exists == 'false' && steps.staged.outputs.exists == 'false' && steps.release.outputs.dry_run != 'true'
+        if: steps.published.outputs.exists == 'false' && steps.release.outputs.dry_run != 'true'
         id: stage
         env:
           DIST_TAG: ${{ steps.release.outputs.dist_tag }}
@@ -219,7 +175,6 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
           TAG: ${{ steps.release.outputs.tag }}
           PUBLISHED: ${{ steps.published.outputs.exists }}
-          STAGED: ${{ steps.staged.outputs.exists }}
           DRY_RUN: ${{ steps.release.outputs.dry_run }}
           DIST_TAG: ${{ steps.release.outputs.dist_tag }}
         run: |
@@ -232,8 +187,6 @@ jobs:
               echo "- **dry run**: checks only, nothing staged"
             elif [ "$PUBLISHED" = "true" ]; then
               echo "- already published, nothing to do"
-            elif [ "$STAGED" = "true" ]; then
-              echo "- already in the stage queue, not staged again"
             else
               echo "- **staged, awaiting approval** — 2FA required:"
               echo "  - npmjs.com → the package → Staged Packages → Approve, or"

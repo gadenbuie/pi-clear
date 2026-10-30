@@ -152,7 +152,10 @@ node --test scripts/minimal-transcript.test.mjs    # offline: fresh-pass transcr
 node --test scripts/fresh-pass-flow.test.mjs       # offline: /hand-off flow, both writers
 ```
 
-The RPC smoke tests require at least two models with configured auth, and they make **real, billed model requests**. The `node --test` scripts need neither.
+The RPC smoke tests need at least two models with configured auth.
+`rpc-handoff-smoke-test.py` makes **real, billed model requests** (the agent
+writes the hand-off prompt); `rpc-smoke-test.py` only drives local RPC state
+and makes none. The `node --test` scripts need neither auth nor a pi process.
 
 ## Related extensions
 

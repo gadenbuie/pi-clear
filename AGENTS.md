@@ -38,10 +38,15 @@ npx -y -p typescript tsc --noEmit --skipLibCheck \
 
 - `index.ts` is the entire extension; keep the header doc comment in sync
   with behavior.
-- Changelog follows Keep a Changelog; the version in `package.json` and the
-  changelog section should match before tagging.
-- Never move a published tag. `npm publish` records the commit in `gitHead`,
-  so check the pair agrees before calling a release done:
+- Changelog follows Keep a Changelog. The version in `package.json` and the
+  matching `## [X.Y.Z]` changelog section must agree with the tag being
+  released; the workflow refuses to stage otherwise.
+- Tags are lightweight, named `vX.Y.Z`, and point at the commit carrying the
+  version bump — a dedicated `chore: release vX.Y.Z` commit, or the merged
+  feature PR when the bump lands with the feature. Never move a published
+  tag.
+- Publishing records the built commit in the package's `gitHead`, which must
+  equal the tag. Verify before calling a release done:
 
   ```sh
   git rev-list -n1 vX.Y.Z
@@ -50,37 +55,48 @@ npx -y -p typescript tsc --noEmit --skipLibCheck \
 
 ## Releasing
 
-Publishing happens in CI, not from a laptop: `.github/workflows/publish.yml`
-runs when a GitHub Release is published and uses npm trusted publishing
-(OIDC), so there is no `NPM_TOKEN` secret to manage.
+Releases are cut from a GitHub Release, never from a laptop.
+`.github/workflows/publish.yml` runs on `release: published` and
+authenticates with npm trusted publishing (OIDC), so no `NPM_TOKEN` secret
+exists.
 
-It **stages** rather than publishes. `npm stage publish` puts the version in
-npm's stage queue with provenance attached; a maintainer then approves it with
-2FA on npmjs.com (the package's *Staged Packages* tab) or with
-`npm stage approve <stage-id>`, and only that approval puts it on the registry.
-CI never holds permission to publish directly, so "npm publish" and
-"npm dist-tag" stay unchecked on the trusted publisher.
+The workflow **stages**, it does not publish. `npm stage publish` puts the
+version in npm's stage queue with a provenance attestation, and a maintainer
+then approves it with 2FA. Only that approval makes the version installable,
+and CI holds no permission to publish directly.
 
-1. Land the version bump and the changelog entry (a separate
-   `chore: release vX.Y.Z` commit as for 0.3.1, or in the feature PR itself
-   as for 0.4.0 — both are fine).
-2. Tag the release commit and push the tag:
+1. Land the version bump and changelog entry on `main`.
+2. Tag and push:
 
    ```sh
    git tag vX.Y.Z && git push origin vX.Y.Z
    ```
 
-3. Create the GitHub Release for that tag. Publishing the release triggers
-   the workflow, which re-checks the version against the tag and the
-   changelog, typechecks, runs the offline tests, and only then stages.
-   A release marked as a pre-release stages with the `next` dist-tag.
-4. Approve the staged version. Until you do, the release exists on GitHub but
-   nothing installs from npm. The dist-tag is fixed once staged — to change
-   it, reject the staged version and re-run the workflow.
-5. Do not `npm publish` locally — it would skip those checks and the
-   provenance attestation.
+3. Publish a GitHub Release for the tag. A release marked as a pre-release
+   stages with the `next` dist-tag. The workflow re-checks the version against
+   the tag and the changelog, that the tag is on `main`, then typechecks and
+   runs the offline tests before staging.
+4. Approve the staged version on npmjs.com (the package's *Staged Packages*
+   tab) or with `npm stage approve <stage-id>`. Until then the release exists
+   on GitHub but nothing installs from npm.
+5. Verify with the `gitHead` check above and
+   `npm view @grrrck/pi-clear dist-tags`.
 
-A `release` event runs the workflow from the tagged commit, so the workflow
-file has to exist on the tag being staged, and workflow edits only take
-effect for later tags. Re-run it with `workflow_dispatch` (tag + `dry_run`)
-to check a release without staging.
+Constraints that are easy to trip over:
+
+- A `release` event runs the workflow **from the tagged commit**, so the
+  workflow file must already be on the tag. Workflow edits only take effect
+  for later tags.
+- The dist-tag is fixed at stage time. To change it, reject the staged version
+  and re-run the workflow.
+- npm rejects staging a version that is already published or already waiting
+  in the stage queue.
+- Releases must come from `main`: the workflow refuses a tag that is not an
+  ancestor of `origin/main`.
+- The trusted publisher configured on npmjs.com must name `gadenbuie`,
+  `pi-clear`, and `publish.yml` exactly — case-sensitive, filename only, no
+  environment. Leave "npm publish" and "npm dist-tag" unchecked.
+- `npm stage` requires npm >= 11.15 (Node >= 22.14); the workflow pins Node 24
+  for that reason.
+- To validate a release without staging anything, run the workflow manually
+  with `workflow_dispatch`, passing the tag and `dry_run: true`.
