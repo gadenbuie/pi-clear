@@ -73,6 +73,8 @@ There is deliberately no configured default: which writer to use depends on the 
 
 The fresh pass exists because the live agent's prompt inherits the session's whole context window: an old or long conversation may no longer fit, and a session whose model lost auth can still be handed off. Because it never reads tool output, it is told to have the next agent verify anything it cannot see in the transcript.
 
+When the writer model supports reasoning, the fresh pass also asks for its **thinking level**, with **provider default** preselected — so pressing Enter passes straight through. Set a standing preference with `handoff.summarizerThinkingLevel` in the config file; the picker then preselects that level instead, and the level is passed to the model as `reasoning`. Models without reasoning controls skip the dialog entirely.
+
 Fresh pass flags and limits:
 
 - `--fresh` skips the writer picker and uses the fresh pass; `--live` skips it and uses the current agent. Passing both is refused before any dialog opens.
@@ -99,6 +101,7 @@ Optional settings live in `<agent-dir>/pi-clear.json` (`~/.pi/agent`, or `$PI_CO
   "handoff": {
     "summarizerModel": "anthropic/claude-haiku-4-5",
     "askSummarizerModel": true,
+    "summarizerThinkingLevel": "low",
     "maxSourceChars": 200000
   }
 }
@@ -106,6 +109,7 @@ Optional settings live in `<agent-dir>/pi-clear.json` (`~/.pi/agent`, or `$PI_CO
 
 - `summarizerModel` — preselected in the writer-model picker, and offered as its own `Fresh pass — <model>` entry in the writer picker.
 - `askSummarizerModel: false` — with `summarizerModel` set, skip the writer-model picker entirely and always use that model.
+- `summarizerThinkingLevel` — preselected in the writer's thinking-level picker: `"default"` (or `"off"`) for the provider default, otherwise `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. The dialog stays available either way.
 - `maxSourceChars` — characters of conversation sent to the fresh pass (default `200000`, about 50k tokens). `0` disables the budget.
 
 A malformed file is reported as a warning and ignored. The same knobs are available per pi launch as CLI flags:
@@ -145,6 +149,7 @@ python3 scripts/rpc-smoke-test.py          # /clear keeps model + thinking level
 python3 scripts/rpc-handoff-smoke-test.py  # /hand-off, both writers, dialogs included
 node --test scripts/model-picker.test.mjs          # offline: model picker behavior
 node --test scripts/minimal-transcript.test.mjs    # offline: fresh-pass transcript + budget
+node --test scripts/fresh-pass-flow.test.mjs       # offline: /hand-off flow, both writers
 ```
 
 The RPC smoke tests require at least two models with configured auth, and they make **real, billed model requests**. The `node --test` scripts need neither.

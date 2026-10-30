@@ -212,8 +212,9 @@ Requirements for your output:
 - Reply with ONLY the hand-off message: no preamble, no postamble, no fences.
 ```
 
-Call options: `{ signal, cacheRetention: "none", sessionId: uuid }`. No
-`reasoning` option in v1 (provider default); see Open questions.
+Call options: `{ signal, cacheRetention: "none", sessionId: uuid }`, plus
+`reasoning` when the writer model supports it and a level was chosen (see
+Open questions [2]).
 
 Validation mirrors pi's `getSummarizationFailure`: reject
 `stopReason !== "stop"` (notably `"length"`), strip surrounding fences, reject
@@ -254,6 +255,7 @@ Settings live in `<agent-dir>/pi-clear.json` (`<agent-dir>` defaults to
   "handoff": {
     "summarizerModel": "anthropic/claude-haiku-4-5",
     "askSummarizerModel": true,
+    "summarizerThinkingLevel": "low",
     "maxSourceChars": 200000
   }
 }
@@ -264,6 +266,8 @@ Settings live in `<agent-dir>/pi-clear.json` (`<agent-dir>` defaults to
   "Fresh pass — <model>" entry in [1].
 - `askSummarizerModel`: `false` **and** `summarizerModel` set ⇒ [2b] is skipped
   entirely (this is the "skip the extra choice" case).
+- `summarizerThinkingLevel`: preselected in the writer's thinking-level picker;
+  `"default"` (or `"off"`) means the provider default.
 - `maxSourceChars`: transcript budget, `0` disables.
 
 Two separate override surfaces, easy to confuse:
@@ -324,8 +328,12 @@ to preselect the last used summarizer model within a session.
 1. **Flag name for the live agent path.** `--live` is the current placeholder,
    chosen to pair with `--fresh`. Alternatives: `--in-session`, `--inline`,
    `--current`, `--agent` (rejected as the least descriptive of the set).
-2. Should the fresh pass be allowed to run with a *different thinking level*
-   (`reasoning` option on `complete()`), or always the provider default?
+2. ~~Should the fresh pass be allowed to run with a different thinking level?~~
+   **Resolved: yes.** The fresh pass asks for the writer's thinking level with
+   the provider default preselected (`handoff.summarizerThinkingLevel` sets a
+   standing preference). The level is passed as the `reasoning` option and only
+   when the model declares reasoning support, the way pi's own summarization
+   does. Models without reasoning controls skip the dialog.
 3. When `--fresh` is passed explicitly and no summarizer model is pinned, does
    [2b] still open (default yes, since the model choice matters more than the
    keystroke), or should `--fresh` imply "current model, don't ask"?

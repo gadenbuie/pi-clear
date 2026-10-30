@@ -220,3 +220,22 @@ test("a malformed settings file warns instead of throwing", () => {
 	assert.match(invalid.warning ?? "", /summarizerModel/);
 	assert.match(invalid.warning ?? "", /maxSourceChars/);
 });
+
+test("the writer thinking level accepts levels and the provider default", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-clear-settings-"));
+	const path = join(dir, "pi-clear.json");
+
+	writeFileSync(path, JSON.stringify({ handoff: { summarizerThinkingLevel: "high" } }));
+	assert.deepEqual(loadHandoffSettings(path), { settings: { summarizerThinkingLevel: "high" } });
+
+	// "default" and "off" both mean "leave the choice to the provider".
+	for (const value of ["default", "off"]) {
+		writeFileSync(path, JSON.stringify({ handoff: { summarizerThinkingLevel: value } }));
+		assert.deepEqual(loadHandoffSettings(path), { settings: {} }, value);
+	}
+
+	writeFileSync(path, JSON.stringify({ handoff: { summarizerThinkingLevel: "extreme" } }));
+	const invalid = loadHandoffSettings(path);
+	assert.deepEqual(invalid.settings, {});
+	assert.match(invalid.warning ?? "", /summarizerThinkingLevel/);
+});

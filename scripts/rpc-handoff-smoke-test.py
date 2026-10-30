@@ -10,10 +10,10 @@ Two scripted scenarios, each in its own pi process:
          receive the prompt (with the provenance comment) via set_editor_text.
 
   fresh  a normal turn first, then /hand-off --fresh: the writer picker is
-         skipped, the summarizer model picker opens, and the prompt is written
-         by a single out-of-band model call. No agent turn may start during the
-         hand-off, and the editor text must carry the provenance comment with
-         the *previous* session id.
+         skipped, the summarizer model and thinking-level pickers open, and the
+         prompt is written by a single out-of-band model call. No agent turn may
+         start during the hand-off, and the editor text must carry the
+         provenance comment with the *previous* session id.
 
 Requires: pi on PATH, at least two models with configured auth.
 
@@ -255,8 +255,10 @@ def scenario_live():
 		# Dialog 1: destination model.
 		target_model = choose_model(rpc, initial_model, "hand off to model", prefer_other=True)
 
-		# Dialog 2: thinking level.
+		# Dialog 2: destination thinking level (the live agent writes with its own).
 		level_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+		if "writer" in (level_dialog.get("title") or "").lower():
+			fail(f"[live] the live path must not ask for a writer thinking level: {level_dialog.get('title')!r}")
 		rpc.respond_ui(level_dialog["id"], value="high")
 
 		# Dialog 3: steering editor.
@@ -325,7 +327,22 @@ def scenario_fresh():
 			rpc, initial_model, "hand-off writer model", prefer_other=False, dialog=summarizer_dialog
 		)
 
-		target_model = choose_model(rpc, initial_model, "hand off to model", prefer_other=True)
+		# The writer's thinking level, when the writer model supports reasoning;
+		# the provider default is preselected, so Enter keeps it.
+		next_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+		if "hand-off writer" in (next_dialog.get("title") or "").lower() and "thinking" in (
+			next_dialog.get("title") or ""
+		).lower():
+			writer_levels = next_dialog.get("options") or []
+			if writer_levels[:1] != ["provider default  (current)"]:
+				fail(f"[fresh] the writer thinking picker should default to the provider default: {writer_levels}")
+			print("[fresh] writer thinking:", writer_levels[0])
+			rpc.respond_ui(next_dialog["id"], value=writer_levels[0])
+			next_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+		else:
+			print("[fresh] writer thinking: skipped (model has no reasoning controls)")
+
+		target_model = choose_model(rpc, initial_model, "hand off to model", prefer_other=True, dialog=next_dialog)
 
 		level_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
 		rpc.respond_ui(level_dialog["id"], value="low")

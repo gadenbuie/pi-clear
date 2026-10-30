@@ -29,7 +29,8 @@
  *      call over a *minimal reconstruction* of the conversation (no tool
  *      output, no thinking, head+tail budget), so long or stale sessions can
  *      still be handed off, and a cheap model can do the writing. It has no
- *      tool access.
+ *      tool access, and its thinking level is chosen separately (provider
+ *      default preselected).
  * 4. The extension prepends a provenance comment naming the source session
  *    (both writers), replaces the session, applies the chosen model and
  *    thinking level, and inserts the prompt into the editor.
@@ -105,6 +106,14 @@ const THINKING_LEVELS: ThinkingLevel[] = [
 
 const HANDOFF_CUSTOM_TYPE = "pi-clear:hand-off-request";
 
+/**
+ * Reasoning levels offered for the fresh pass. "off" is not offered: it means
+ * the same thing as the provider default here, because the option is omitted
+ * either way.
+ */
+const WRITER_REASONING_LEVELS: ThinkingLevel[] = THINKING_LEVELS.filter((level) => level !== "off");
+const WRITER_DEFAULT_REASONING_LABEL = "provider default";
+
 function sameModel(a: AnyModel | undefined, b: AnyModel | undefined): boolean {
 	return !!a && !!b && a.provider === b.provider && a.id === b.id;
 }
@@ -175,6 +184,35 @@ async function selectThinkingLevel(ctx: ExtensionContext): Promise<ThinkingLevel
 	if (chosen === undefined) return undefined;
 	const index = labelIndex(chosen, labels);
 	return index === -1 ? undefined : ordered[index];
+}
+
+/**
+ * Thinking level for the fresh pass writer. The provider default comes first and
+ * is preselected unless the config file pins a level, so pressing Enter keeps
+ * today's behavior and the dialog is a no-op for most runs.
+ */
+async function selectWriterReasoningLevel(
+	ctx: ExtensionContext,
+	preselected: ThinkingLevel | undefined,
+): Promise<{ reasoning?: ThinkingLevel } | undefined> {
+	const ordered = preselected
+		? [preselected, ...WRITER_REASONING_LEVELS.filter((level) => level !== preselected)]
+		: [...WRITER_REASONING_LEVELS];
+	const options: Array<{ reasoning?: ThinkingLevel; label: string }> = ordered.map((level) => ({
+		reasoning: level,
+		label: `${level}${level === preselected ? "  (current)" : ""}`,
+	}));
+	if (preselected) {
+		options.push({ label: WRITER_DEFAULT_REASONING_LABEL });
+	} else {
+		options.unshift({ label: `${WRITER_DEFAULT_REASONING_LABEL}  (current)` });
+	}
+
+	const labels = options.map((option) => option.label);
+	const chosen = await ctx.ui.select("Thinking level for the hand-off writer", labels);
+	if (chosen === undefined) return undefined;
+	const index = labelIndex(chosen, labels);
+	return index === -1 ? undefined : { reasoning: options[index].reasoning };
 }
 
 /**
@@ -751,6 +789,14 @@ function withSessionProvenance(prompt: string, ctx: ExtensionContext): string {
 // Fresh pass generation
 // ============================================================================
 
+/** Options for the one-shot writer call; `reasoning` is only set when supported. */
+interface WriterRequestOptions {
+	signal?: AbortSignal;
+	cacheRetention: "none";
+	sessionId: string;
+	reasoning?: ThinkingLevel;
+}
+
 interface WriterOutcome {
 	prompt?: string;
 	error?: string;
@@ -798,6 +844,7 @@ async function generateFreshPassPrompt(
 	model: AnyModel,
 	transcript: string,
 	steering: string,
+	reasoning: ThinkingLevel | undefined,
 ): Promise<string | undefined> {
 	const userMessage = {
 		role: "user" as const,
@@ -806,11 +853,16 @@ async function generateFreshPassPrompt(
 	};
 
 	const attempt = async (signal?: AbortSignal): Promise<WriterOutcome> => {
+		const options: WriterRequestOptions = { signal, cacheRetention: "none", sessionId: randomUUID() };
+		// Providers default when the option is absent, and models without
+		// reasoning controls would reject it; pi's own summarization does the
+		// same check before setting the level.
+		if (reasoning && model.reasoning) options.reasoning = reasoning;
 		try {
 			const response = await ctx.modelRegistry.complete(
 				model,
 				{ systemPrompt: HANDOFF_SYSTEM_PROMPT, messages: [userMessage] },
-				{ signal, cacheRetention: "none", sessionId: randomUUID() },
+				options,
 			);
 			return checkWrittenPrompt(response);
 		} catch (err) {
@@ -892,6 +944,8 @@ export function parseHandoffArgs(args: string): ParsedHandoffArgs {
 export interface HandoffSettings {
 	summarizerModel?: string;
 	askSummarizerModel?: boolean;
+	/** Thinking level for the fresh pass; absent means the provider default. */
+	summarizerThinkingLevel?: ThinkingLevel;
 	maxSourceChars?: number;
 }
 
@@ -936,6 +990,20 @@ export function loadHandoffSettings(path: string = join(getAgentDir(), SETTINGS_
 			settings.summarizerModel = handoff.summarizerModel.trim();
 		} else {
 			problems.push('"summarizerModel" must be a "provider/model" string');
+		}
+	}
+	if (handoff.summarizerThinkingLevel !== undefined) {
+		const value = handoff.summarizerThinkingLevel;
+		// "default" (and "off") mean "leave the choice to the provider", the same
+		// as omitting the key.
+		if (value === "default" || value === "off") {
+			// Nothing to record.
+		} else if (typeof value === "string" && WRITER_REASONING_LEVELS.includes(value as ThinkingLevel)) {
+			settings.summarizerThinkingLevel = value as ThinkingLevel;
+		} else {
+			problems.push(
+				`"summarizerThinkingLevel" must be "default" or one of ${WRITER_REASONING_LEVELS.join(", ")}`,
+			);
 		}
 	}
 	if (handoff.askSummarizerModel !== undefined) {
@@ -1118,6 +1186,7 @@ export default function (pi: ExtensionAPI) {
 	async function captureFromFreshPass(
 		ctx: ExtensionContext,
 		writer: WriterChoice & { kind: "fresh" },
+		reasoning: ThinkingLevel | undefined,
 		steering: string,
 	): Promise<string | undefined> {
 		const messages = ctx.sessionManager.buildSessionProjection().messages;
@@ -1133,7 +1202,7 @@ export default function (pi: ExtensionAPI) {
 				"info",
 			);
 		}
-		return generateFreshPassPrompt(ctx, writer.model, source.text, steering);
+		return generateFreshPassPrompt(ctx, writer.model, source.text, steering, reasoning);
 	}
 
 	pi.registerFlag(FLAG_MAX_SOURCE_CHARS, {
@@ -1229,13 +1298,21 @@ export default function (pi: ExtensionAPI) {
 				const askSummarizer =
 					!pinnedModel || (!pinnedByFlag && handoffSettings.askSummarizerModel !== false);
 
-				// 1. Choose who writes the hand-off prompt.
+				// 1. Choose who writes the hand-off prompt, and (for the fresh pass)
+				// how hard that model should think.
 				const writer = await chooseWriter(ctx, {
 					writer: parsed.writer,
 					pinnedModel,
 					askSummarizer,
 				});
 				if (!writer) return;
+
+				let writerReasoning: ThinkingLevel | undefined;
+				if (writer.kind === "fresh" && writer.model.reasoning) {
+					const chosen = await selectWriterReasoningLevel(ctx, handoffSettings.summarizerThinkingLevel);
+					if (!chosen) return;
+					writerReasoning = chosen.reasoning;
+				}
 
 				// 2. Pick the destination model.
 				const target = await pickTargetModel(ctx);
@@ -1258,7 +1335,7 @@ export default function (pi: ExtensionAPI) {
 				const prompt =
 					writer.kind === "live"
 						? await captureFromLiveAgent(ctx, steering)
-						: await captureFromFreshPass(ctx, writer, steering);
+						: await captureFromFreshPass(ctx, writer, writerReasoning, steering);
 				if (!prompt) return;
 
 				// 6. Carry everything across session replacement as plain data, with
