@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """RPC smoke test for the pi-clear /hand-off command.
 
-Starts pi in RPC mode with this extension, runs /hand-off, answers the
-model / thinking / steering dialogs, waits for the agent to write the
-hand-off prompt, and asserts that the replacement session:
+Two scripted scenarios, each in its own pi process:
 
-  * uses the model chosen in the dialog,
-  * kept the chosen thinking level (as reported by get_state),
-  * received the hand-off prompt via a set_editor_text request.
+  live   /hand-off through every dialog: the writer picker (the live agent),
+         then model, thinking level, and steering. The agent writes the
+         hand-off prompt as its next message; the replacement session must use
+         the model chosen in the dialog, keep the chosen thinking level, and
+         receive the prompt (with the provenance comment) via set_editor_text.
+
+  fresh  a normal turn first, then /hand-off --fresh: the writer picker is
+         skipped, the summarizer model picker opens, and the prompt is written
+         by a single out-of-band model call. No agent turn may start during the
+         hand-off, and the editor text must carry the provenance comment with
+         the *previous* session id.
 
 Requires: pi on PATH, at least two models with configured auth.
+
+WARNING: both scenarios make real, billed model requests. Ask before running.
 """
 
 import json
@@ -22,14 +30,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POLL_INTERVAL = 0.3
-STARTUP_WAIT = 15
-DIALOG_TIMEOUT = 20
-SETTLE_TIMEOUT = 180
+STARTUP_WAIT = 20
+DIALOG_TIMEOUT = 30
+SETTLE_TIMEOUT = 240
+WRITER_LIVE_LABEL = "This agent — full context and tools"
 
 
 class RpcSession:
-	def __init__(self):
-		self.log_path = os.path.join(tempfile.gettempdir(), "pi-clear-handoff-smoke-test.log")
+	def __init__(self, name):
+		self.name = name
+		self.log_path = os.path.join(tempfile.gettempdir(), f"pi-clear-handoff-smoke-test-{name}.log")
 		if os.path.exists(self.log_path):
 			os.remove(self.log_path)
 		self.proc = subprocess.Popen(
@@ -64,6 +74,13 @@ class RpcSession:
 		except FileNotFoundError:
 			return []
 
+	def _objects(self):
+		for line in self._log_lines():
+			try:
+				yield json.loads(line)
+			except json.JSONDecodeError:
+				continue
+
 	def next_ui_request(self, method, timeout):
 		"""Wait for the next extension_ui_request with the given method."""
 		deadline = time.time() + timeout
@@ -78,36 +95,44 @@ class RpcSession:
 				if obj.get("type") == "extension_ui_request" and obj.get("method") == method:
 					return obj
 			time.sleep(POLL_INTERVAL)
-		raise TimeoutError(f"timed out waiting for {method} dialog")
+		raise TimeoutError(f"[{self.name}] timed out waiting for {method} dialog")
 
 	def wait_response(self, request_id, description, timeout=20):
 		deadline = time.time() + timeout
 		while time.time() < deadline:
-			for line in self._log_lines():
-				try:
-					obj = json.loads(line)
-				except json.JSONDecodeError:
-					continue
+			for obj in self._objects():
 				if obj.get("type") == "response" and obj.get("id") == request_id:
 					return obj
 			time.sleep(POLL_INTERVAL)
-		raise TimeoutError(f"timed out waiting for {description}")
+		raise TimeoutError(f"[{self.name}] timed out waiting for {description}")
 
 	def get_state(self, timeout=20):
-		"""Send get_state and wait for the response.
-
-		Returns (model, thinkingLevel, sessionId); raises if pi has no model.
-		"""
+		"""Send get_state and wait for the response; raises if pi has no model."""
 		request_id = self.send("get_state")
 		data = self.wait_response(request_id, "get_state", timeout=timeout)["data"]
-		model = data.get("model")
-		if not model:
+		if not data.get("model"):
 			raise RuntimeError("pi has no active model; smoke test cannot run")
-		return (
-			model["provider"] + "/" + model["id"],
-			data.get("thinkingLevel"),
-			data.get("sessionId"),
-		)
+		return data
+
+	def model_of(self, state):
+		return state["model"]["provider"] + "/" + state["model"]["id"]
+
+	def count_events(self, event_type):
+		"""Count agent/session events (agent_start, agent_end, ...) in the log.
+
+		Responses and extension UI requests also carry ``type`` but always have an
+		``id``; agent events do not.
+		"""
+		return sum(1 for obj in self._objects() if obj.get("type") == event_type and "id" not in obj)
+
+	def editor_texts(self):
+		texts = []
+		for obj in self._objects():
+			if obj.get("type") == "extension_ui_request" and obj.get("method") == "set_editor_text":
+				text = (obj.get("text") or "").strip()
+				if text:
+					texts.append(text)
+		return texts
 
 	def terminate(self):
 		self.proc.terminate()
@@ -120,61 +145,117 @@ def wait_until(predicate, timeout, description):
 		if result is not None:
 			return result
 		time.sleep(POLL_INTERVAL)
-	raise TimeoutError(f"timed out waiting for {description}")
 
 
-def main():
-	rpc = RpcSession()
+def fail(msg):
+	print(f"RESULT: FAIL - {msg}")
+	sys.exit(1)
 
-	def fail(msg):
-		print(f"RESULT: FAIL - {msg}")
-		sys.exit(1)
 
+def wait_for_startup(rpc):
+	def ready():
+		try:
+			rpc.get_state(timeout=5)
+			return True
+		except TimeoutError:
+			return None
+
+	if not wait_until(ready, STARTUP_WAIT, "pi startup"):
+		fail(f"[{rpc.name}] pi did not become ready; see {rpc.log_path}")
+	return rpc.get_state()
+
+
+def choose_model(rpc, initial_model, description, prefer_other, dialog=None):
+	"""Answer a fallback picker: an optional provider dialog, then a model dialog.
+
+	Returns the chosen provider/model.
+	"""
+	if dialog is None:
+		dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+	options = dialog.get("options") or []
+	if "provider" in (dialog.get("title") or "").lower():
+		provider = initial_model.split("/")[0]
+		provider_label = next((o for o in options if o.split("  (")[0] == provider), None)
+		if not provider_label:
+			fail(f"[{rpc.name}] current provider missing from the {description} provider dialog: {options}")
+		rpc.respond_ui(dialog["id"], value=provider_label)
+		dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+		options = dialog.get("options") or []
+
+	if prefer_other:
+		chosen = next((o for o in options if o.split("  (current)")[0] != initial_model), None)
+		if not chosen:
+			fail(f"[{rpc.name}] no alternative model offered in the {description} dialog: {options}")
+	else:
+		chosen = next((o for o in options if o.split("  (current)")[0] == initial_model), None)
+		if not chosen:
+			chosen = options[0] if options else None
+		if not chosen:
+			fail(f"[{rpc.name}] no model offered in the {description} dialog: {options}")
+
+	print(f"[{rpc.name}] {description}:", chosen.split("  (current)")[0])
+	rpc.respond_ui(dialog["id"], value=chosen)
+	return chosen.split("  (current)")[0]
+
+
+def wait_for_handoff(rpc, initial_session, target_model):
+	"""Poll until the replacement session is live with the chosen model applied."""
+	last = {"session": initial_session, "model": None, "level": None}
+
+	def handed_off():
+		try:
+			state = rpc.get_state(timeout=5)
+		except TimeoutError:
+			return None
+		last.update(session=state.get("sessionId"), model=rpc.model_of(state), level=state.get("thinkingLevel"))
+		if last["session"] == initial_session:
+			return None  # replacement session not active yet
+		return state if last["model"] == target_model else None
+
+	state = wait_until(handed_off, SETTLE_TIMEOUT, "session hand-off")
+	if state is None:
+		fail(
+			f"[{rpc.name}] session was never handed off; last saw "
+			f"{last['model']}/{last['level']} in session {last['session']}"
+		)
+	return state
+
+
+def check_provenance(editor_text, initial_session):
+	expected = f"<!-- Handed off from pi session {initial_session} -->"
+	if not editor_text.startswith(expected):
+		fail(
+			f"editor text does not start with the provenance comment for {initial_session}: "
+			f"{editor_text[:200]!r}"
+		)
+
+
+def scenario_live():
+	"""The live agent path: writer picker → model → thinking → steering."""
+	rpc = RpcSession("live")
 	try:
-		# Wait for pi to accept input; first successful get_state means it is ready.
-		def ready():
-			try:
-				rpc.get_state(timeout=5)
-				return True
-			except TimeoutError:
-				return None
+		initial_state = wait_for_startup(rpc)
+		initial_model = rpc.model_of(initial_state)
+		initial_session = initial_state["sessionId"]
+		print(f"[live] initial: {initial_model} in session {initial_session}")
 
-		wait_until(ready, STARTUP_WAIT, "pi startup")
-		initial_model, _, initial_session = rpc.get_state()
-		print("initial:", initial_model)
-
-		# Run /hand-off. The RPC prompt response only arrives after the command
-		# handler finishes, which requires answering the dialogs first, so the
-		# response is checked at the end rather than awaited here.
+		# The RPC prompt response only arrives after the command handler finishes,
+		# which requires answering the dialogs first, so it is checked at the end.
 		prompt_request_id = rpc.send("prompt", message="/hand-off")
 
-		# Dialog 1: model select — or provider select first when the session has
-		# no model scoping (the RPC fallback shows provider → model).
-		model_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
-		options = model_dialog.get("options") or []
-		if "provider" in model_dialog.get("title", ""):
-			initial_provider = initial_model.split("/")[0]
-			provider_label = next(
-				(o for o in options if o.split("  (")[0] == initial_provider),
-				None,
-			)
-			if not provider_label:
-				fail(f"current provider not offered in the provider dialog: {options}")
-			print("provider dialog answered:", provider_label)
-			rpc.respond_ui(model_dialog["id"], value=provider_label)
-			model_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
-			options = model_dialog.get("options") or []
-		target_label = next(
-			(o for o in options if o.split("  (current)")[0] != initial_model),
-			None,
-		)
-		if not target_label:
-			fail(f"no alternative model offered in the select dialog: {options}")
-		target_model = target_label.split("  (current)")[0]
-		print("handing off to:", target_model)
-		rpc.respond_ui(model_dialog["id"], value=target_label)
+		# Dialog 0: who writes the hand-off prompt? Enter takes the live agent.
+		writer_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+		if "who writes" not in (writer_dialog.get("title") or "").lower():
+			fail(f"[live] expected the writer picker first, got {writer_dialog.get('title')!r}")
+		writer_options = writer_dialog.get("options") or []
+		if writer_options[:1] != [WRITER_LIVE_LABEL]:
+			fail(f"[live] the live agent should be first in the writer picker: {writer_options}")
+		rpc.respond_ui(writer_dialog["id"], value=WRITER_LIVE_LABEL)
 
-		# Dialog 2: thinking level select.
+		# Dialog 1: destination model.
+		target_model = choose_model(rpc, initial_model, "hand off to model", prefer_other=True)
+
+		# Dialog 2: thinking level.
 		level_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
 		rpc.respond_ui(level_dialog["id"], value="high")
 
@@ -182,62 +263,117 @@ def main():
 		editor_dialog = rpc.next_ui_request("editor", DIALOG_TIMEOUT)
 		rpc.respond_ui(editor_dialog["id"], value="Mention that the smoke test passed.")
 
-		# The agent now writes the hand-off prompt; wait for the replacement
-		# session, then confirm the chosen model and thinking level applied.
-		last_state = {"session_id": initial_session, "model": None, "level": None}
+		# The agent now writes the hand-off prompt.
+		state = wait_for_handoff(rpc, initial_session, target_model)
+		print("[live] after hand-off:", rpc.model_of(state), "thinking:", state.get("thinkingLevel"))
+		if state.get("sessionId") == initial_session:
+			fail("[live] session id did not change")
 
-		def handed_off():
-			try:
-				model, level, session_id = rpc.get_state(timeout=5)
-			except TimeoutError:
-				return None
-			except RuntimeError as err:
-				fail(f"replacement session has no model: {err}")
-			last_state.update(model=model, level=level, session_id=session_id)
-			if session_id == initial_session:
-				return None  # replacement session not active yet
-			if model == target_model:
-				return model, level
-			return None
-
-		try:
-			final_model, final_level = wait_until(handed_off, SETTLE_TIMEOUT, "session hand-off")
-		except TimeoutError:
-			fail(
-				f"session was never handed off; last saw "
-				f"{last_state['model']}/{last_state['level']} in session {last_state['session_id']}"
-			)
-		print("after hand-off:", final_model, "thinking:", final_level)
-
-		# The hand-off prompt should have been inserted into the editor via a
-		# fire-and-forget set_editor_text request.
-		editor_text = None
-		for line in rpc._log_lines():
-			try:
-				obj = json.loads(line)
-			except json.JSONDecodeError:
-				continue
-			if obj.get("type") == "extension_ui_request" and obj.get("method") == "set_editor_text":
-				text = (obj.get("text") or "").strip()
-				if text:
-					editor_text = text
-		if not editor_text:
-			fail("no set_editor_text request with a non-empty prompt was sent")
+		texts = rpc.editor_texts()
+		if not texts:
+			fail("[live] no set_editor_text request with a non-empty prompt was sent")
+		editor_text = texts[-1]
 		if "smoke test" not in editor_text.lower():
-			fail(f"editor text ignores the steering instructions: {editor_text[:200]!r}")
-		print("editor prompt (first 120 chars):", editor_text[:120].replace("\n", " "))
+			fail(f"[live] editor text ignores the steering instructions: {editor_text[:200]!r}")
+		check_provenance(editor_text, initial_session)
+		print("[live] editor prompt (first 120 chars):", editor_text[:120].replace("\n", " "))
 
-		# The /hand-off prompt response should now have been emitted.
-		prompt_response = rpc.wait_response(prompt_request_id, "/hand-off prompt response", timeout=5)
-		if not prompt_response.get("success"):
-			fail(f"/hand-off prompt was not accepted: {prompt_response}")
+		response = rpc.wait_response(prompt_request_id, "/hand-off prompt response", timeout=5)
+		if not response.get("success"):
+			fail(f"[live] /hand-off prompt was not accepted: {response}")
 
-		if final_level != "high":
-			print(f"note: thinking level is {final_level!r} (pi may clamp it for the target model)")
+		if state.get("thinkingLevel") != "high":
+			print(f"[live] note: thinking level is {state.get('thinkingLevel')!r} (pi may clamp it)")
 
-		print("RESULT: PASS - hand-off prompt carried into a fresh session with the chosen model")
+		print("RESULT: PASS [live] - the live agent's prompt carried into a fresh session with the chosen model")
 	finally:
 		rpc.terminate()
+
+
+def scenario_fresh():
+	"""The fresh pass: --fresh skips the writer picker, no agent turn starts."""
+	rpc = RpcSession("fresh")
+	try:
+		initial_state = wait_for_startup(rpc)
+		initial_model = rpc.model_of(initial_state)
+		initial_session = initial_state["sessionId"]
+		print(f"[fresh] initial: {initial_model} in session {initial_session}")
+
+		# Seed the conversation: the fresh pass needs something to hand off.
+		seed_id = rpc.send("prompt", message="Reply with the single word: READY")
+		rpc.wait_response(seed_id, "seed prompt", timeout=SETTLE_TIMEOUT)
+
+		def settled():
+			state = rpc.get_state(timeout=10)
+			if state.get("isStreaming"):
+				return None
+			return state if state.get("messageCount", 0) >= 2 else None
+
+		seeded = wait_until(settled, SETTLE_TIMEOUT, "the seed turn to finish")
+		if seeded is None:
+			fail(f"[fresh] the seed turn never finished; see {rpc.log_path}")
+		agent_starts_before = rpc.count_events("agent_start")
+		print("[fresh] seed turn done; agent_start so far:", agent_starts_before)
+
+		# --fresh skips the writer picker, so the next dialog is the summarizer.
+		prompt_request_id = rpc.send("prompt", message="/hand-off --fresh")
+
+		summarizer_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+		if "who writes" in (summarizer_dialog.get("title") or "").lower():
+			fail("[fresh] --fresh should skip the writer picker")
+		summarizer_model = choose_model(
+			rpc, initial_model, "hand-off writer model", prefer_other=False, dialog=summarizer_dialog
+		)
+
+		target_model = choose_model(rpc, initial_model, "hand off to model", prefer_other=True)
+
+		level_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+		rpc.respond_ui(level_dialog["id"], value="low")
+
+		editor_dialog = rpc.next_ui_request("editor", DIALOG_TIMEOUT)
+		rpc.respond_ui(editor_dialog["id"], value="Mention that the fresh pass smoke test passed.")
+
+		state = wait_for_handoff(rpc, initial_session, target_model)
+		print(
+			f"[fresh] {summarizer_model} wrote the prompt; handed off to",
+			rpc.model_of(state),
+			"thinking:",
+			state.get("thinkingLevel"),
+		)
+		if state.get("sessionId") == initial_session:
+			fail("[fresh] session id did not change")
+
+		texts = rpc.editor_texts()
+		if not texts:
+			fail("[fresh] no set_editor_text request with a non-empty prompt was sent")
+		editor_text = texts[-1]
+		check_provenance(editor_text, initial_session)
+		if "smoke test" not in editor_text.lower():
+			fail(f"[fresh] editor text ignores the steering instructions: {editor_text[:200]!r}")
+		print("[fresh] editor prompt (first 120 chars):", editor_text[:120].replace("\n", " "))
+
+		response = rpc.wait_response(prompt_request_id, "/hand-off prompt response", timeout=5)
+		if not response.get("success"):
+			fail(f"[fresh] /hand-off prompt was not accepted: {response}")
+
+		# The whole point: no agent turn runs while the fresh pass writes the prompt.
+		agent_starts_after = rpc.count_events("agent_start")
+		if agent_starts_after != agent_starts_before:
+			fail(
+				f"[fresh] an agent turn started during the fresh pass "
+				f"({agent_starts_before} → {agent_starts_after} agent_start events)"
+			)
+		print("[fresh] no agent turn started during the hand-off")
+
+		print("RESULT: PASS [fresh] - a bare model call wrote the prompt, no agent turn, provenance carried")
+	finally:
+		rpc.terminate()
+
+
+def main():
+	for scenario in (scenario_live, scenario_fresh):
+		scenario()
+	print("RESULT: PASS - both /hand-off scenarios completed")
 
 
 if __name__ == "__main__":
