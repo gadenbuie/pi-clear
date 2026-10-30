@@ -1,21 +1,28 @@
-# Publish @grrrck/pi-clear to npm when a GitHub Release is published.
+# Stage @grrrck/pi-clear for publishing when a GitHub Release is published.
+#
+# The version does not go live here: `npm stage publish` puts it in the stage
+# queue, and a maintainer approves it with 2FA (npmjs.com → the package →
+# Staged Packages, or `npm stage approve <stage-id>`). Approval is the only
+# step that requires proof-of-presence, and an OIDC token cannot do it, so no
+# workflow ever publishes directly to the registry.
 #
 # Auth is npm trusted publishing (OIDC): no NPM_TOKEN secret is stored, and
-# npm attaches a provenance attestation automatically because this repository
-# and the package are both public. One-time setup on npmjs.com, under the
-# package's Settings → Trusted Publishing → GitHub Actions:
+# staged versions get the same provenance attestation a direct publish would.
+# One-time setup on npmjs.com, under the package's Settings → Trusted
+# Publishing → GitHub Actions:
 #
 #   Organization or user: gadenbuie
 #   Repository:           pi-clear
 #   Workflow filename:    publish.yml      (filename only, case-sensitive)
 #   Environment name:     (leave empty)
 #
-# And under Settings → Trusted Publishing → Allowed actions, enable
-# "npm publish" — connections created after 2026-09-03 allow only
-# `npm stage publish` by default, and a direct `npm publish` fails without it.
+# Leave the other permissions alone. "npm stage publish" is always allowed for
+# connections created after 2026-09-03, and "npm publish" / "npm dist-tag"
+# should stay unchecked: the point of staging is that CI cannot put a version
+# on the registry by itself.
 #
 # Because a `release` event runs the workflow from the tagged commit, this
-# file must be present on the tag it publishes.
+# file must be present on the tag it stages.
 
 name: Publish to npm
 
@@ -140,22 +147,74 @@ jobs:
         run: |
           if npm view "@grrrck/pi-clear@${VERSION}" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::@grrrck/pi-clear@${VERSION} is already published; skipping npm publish."
+            echo "::warning::@grrrck/pi-clear@${VERSION} is already published; nothing to stage."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish to npm
-        if: steps.published.outputs.exists == 'false' && steps.release.outputs.dry_run != 'true'
+      # A re-run of the same release would try to stage a version that is
+      # already waiting in the queue, which npm rejects. Reading the queue
+      # needs auth, so this is best effort: if it fails we stage anyway and
+      # let npm report the conflict.
+      - name: Check whether this version is already staged
+        id: staged
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          if ! npm stage list "@grrrck/pi-clear" --json > staged.json 2> staged.err; then
+            echo "::notice::Could not read the stage queue; skipping this check."
+            cat staged.err staged.json 2>/dev/null || true
+            exit 0
+          fi
+          if node -e '
+            const fs = require("node:fs");
+            const want = process.env.VERSION;
+            let data;
+            try {
+              data = JSON.parse(fs.readFileSync("staged.json", "utf8"));
+            } catch {
+              process.exit(1);
+            }
+            // Match a `version` field, a shape that keys by version, or a
+            // bare version string. Prefix matches are deliberately not
+            // allowed, so 0.4 can never look like 0.4.0.
+            let found = false;
+            (function walk(node) {
+              if (found || !node) return;
+              if (Array.isArray(node)) return node.forEach(walk);
+              if (typeof node !== "object") return;
+              for (const [key, value] of Object.entries(node)) {
+                if (key === want || (key === "version" && value === want) || value === want) {
+                  found = true;
+                  return;
+                }
+                walk(value);
+              }
+            })(data);
+            process.exit(found ? 0 : 1);
+          '; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::@grrrck/pi-clear@${VERSION} is already in the stage queue; not staging again."
+          fi
+
+      - name: Stage the release
+        if: steps.published.outputs.exists == 'false' && steps.staged.outputs.exists == 'false' && steps.release.outputs.dry_run != 'true'
+        id: stage
         env:
           DIST_TAG: ${{ steps.release.outputs.dist_tag }}
-        run: npm publish --access public --tag "$DIST_TAG"
+        run: |
+          set -o pipefail
+          # The tag is fixed once staged: to change it, reject the staged
+          # version and re-run this workflow.
+          npm stage publish --access public --tag "$DIST_TAG" 2>&1 | tee stage.log
 
       - name: Summarize
         env:
           VERSION: ${{ steps.release.outputs.version }}
           TAG: ${{ steps.release.outputs.tag }}
-          EXISTS: ${{ steps.published.outputs.exists }}
+          PUBLISHED: ${{ steps.published.outputs.exists }}
+          STAGED: ${{ steps.staged.outputs.exists }}
           DRY_RUN: ${{ steps.release.outputs.dry_run }}
           DIST_TAG: ${{ steps.release.outputs.dist_tag }}
         run: |
@@ -163,12 +222,20 @@ jobs:
             echo "### @grrrck/pi-clear ${VERSION}"
             echo
             echo "- tag: \`${TAG}\`"
-            echo "- dist-tag: \`${DIST_TAG}\`"
+            echo "- dist-tag on approval: \`${DIST_TAG}\`"
             if [ "$DRY_RUN" = "true" ]; then
-              echo "- **dry run**: checks only, nothing published"
-            elif [ "$EXISTS" = "true" ]; then
-              echo "- already published, skipped"
+              echo "- **dry run**: checks only, nothing staged"
+            elif [ "$PUBLISHED" = "true" ]; then
+              echo "- already published, nothing to do"
+            elif [ "$STAGED" = "true" ]; then
+              echo "- already in the stage queue, not staged again"
             else
-              echo "- published: https://www.npmjs.com/package/@grrrck/pi-clear/v/${VERSION}"
+              echo "- **staged, awaiting approval** — 2FA required:"
+              echo "  - npmjs.com → the package → Staged Packages → Approve, or"
+              echo "  - \`npm stage approve <stage-id>\` from \`npm stage list\`"
+              echo "- staging output:"
+              echo '```'
+              tail -n 20 stage.log 2>/dev/null || echo "(no output captured)"
+              echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"

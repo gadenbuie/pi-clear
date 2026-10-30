@@ -54,6 +54,13 @@ Publishing happens in CI, not from a laptop: `.github/workflows/publish.yml`
 runs when a GitHub Release is published and uses npm trusted publishing
 (OIDC), so there is no `NPM_TOKEN` secret to manage.
 
+It **stages** rather than publishes. `npm stage publish` puts the version in
+npm's stage queue with provenance attached; a maintainer then approves it with
+2FA on npmjs.com (the package's *Staged Packages* tab) or with
+`npm stage approve <stage-id>`, and only that approval puts it on the registry.
+CI never holds permission to publish directly, so "npm publish" and
+"npm dist-tag" stay unchecked on the trusted publisher.
+
 1. Land the version bump and the changelog entry (a separate
    `chore: release vX.Y.Z` commit as for 0.3.1, or in the feature PR itself
    as for 0.4.0 — both are fine).
@@ -65,11 +72,15 @@ runs when a GitHub Release is published and uses npm trusted publishing
 
 3. Create the GitHub Release for that tag. Publishing the release triggers
    the workflow, which re-checks the version against the tag and the
-   changelog, typechecks, runs the offline tests, and only then publishes.
-   A release marked as a pre-release publishes to the `next` dist-tag.
-4. Do not `npm publish` locally — it would skip those checks and the
+   changelog, typechecks, runs the offline tests, and only then stages.
+   A release marked as a pre-release stages with the `next` dist-tag.
+4. Approve the staged version. Until you do, the release exists on GitHub but
+   nothing installs from npm. The dist-tag is fixed once staged — to change
+   it, reject the staged version and re-run the workflow.
+5. Do not `npm publish` locally — it would skip those checks and the
    provenance attestation.
 
 A `release` event runs the workflow from the tagged commit, so the workflow
-file has to exist on the tag being published. Re-run it with
-`workflow_dispatch` (tag + `dry_run`) to check a release without publishing.
+file has to exist on the tag being staged, and workflow edits only take
+effect for later tags. Re-run it with `workflow_dispatch` (tag + `dry_run`)
+to check a release without staging.
