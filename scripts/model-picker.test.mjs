@@ -13,6 +13,8 @@ async function openPicker({ scopedModels = [], model = other } = {}) {
 	const commands = new Map();
 	extension({
 		registerCommand: (name, command) => commands.set(name, command),
+		registerFlag: () => {},
+		getFlag: () => undefined,
 		on: () => {},
 	});
 	let component;
@@ -27,6 +29,9 @@ async function openPicker({ scopedModels = [], model = other } = {}) {
 		modelRegistry: { getAvailable: () => [other, sol, named] },
 		ui: {
 			notify: (message) => notifications.push(message),
+			// Accept the writer picker's first entry (the live agent), which is the
+			// path that opens the model picker under test.
+			select: async (_title, options) => options[0],
 			custom: async (factory) => {
 				component = factory(
 					{ requestRender() {} },

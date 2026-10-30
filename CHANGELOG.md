@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-30
+
+### Added
+
+- `/hand-off` asks **who writes the hand-off prompt** before it picks the destination model: *This agent — full context and tools* (the existing behavior, first in the list so Enter keeps it), *Fresh pass — current model*, or *Fresh pass — another model…*.
+- A **fresh pass** writer: one out-of-band `modelRegistry.complete()` call over a minimal reconstruction of the conversation (user text, assistant text, one-line tool-call hints, file-operation footer; no tool output, no thinking) that can use a cheap model and does not inherit the session's context window. It has no tool access.
+- Fresh-pass transcript budget keeps the opening message and the newest turns, elides the middle with a `[... <n> turns omitted — <k> chars ...]` marker, and notifies how much was dropped. Default `200000` characters; `0` disables it.
+- The fresh pass asks for the writer model's thinking level, with the provider default preselected; models without reasoning controls skip the dialog. A standing preference for it comes from `handoff.summarizerThinkingLevel` in the config file.
+- Command flags `--fresh` and `--live`: parsed off the front of the command args, with the rest still pre-filling the steering editor. Passing both is refused before any dialog. There is no command-arg model flag — the model that writes the prompt comes from the config file or the picker.
+- Optional settings in `<agent-dir>/pi-clear.json` (`handoff.summarizerModel`, `handoff.askSummarizerModel`, `handoff.summarizerThinkingLevel`, `handoff.maxSourceChars`), read once per session; a malformed file warns and is ignored.
+- CLI flags `--hand-off-summarizer=<provider/model>` and `--hand-off-max-source-chars=<n>`.
+- Every hand-off prompt, from either writer, now starts with a provenance comment naming the source session: `<!-- Handed off from pi session <id> -->`. It is added by the extension after the prompt is written, so the writing model cannot reword it.
+- `scripts/minimal-transcript.test.mjs`: offline tests for the fresh-pass serializer, budget, file lists, provenance, and command-arg parsing.
+- `scripts/fresh-pass-flow.test.mjs`: offline tests for the whole `/hand-off` flow with mocked pi APIs — both writers, the writer thinking picker and its config preference, trimming, rejection, and the flag conflict.
+
+### Changed
+
+- `scripts/rpc-handoff-smoke-test.py` scripts the new writer picker and adds a `/hand-off --fresh` scenario that asserts no agent turn starts and that the provenance comment carries the previous session id.
+
 ## [0.3.1] - 2026-10-27
 
 ### Fixed
