@@ -16,8 +16,23 @@ configured models and auth:
 
 Before running either script, tell the user what it does and **ask for
 confirmation first**. Do not run them as a side effect of other work, in
-loops, or in parallel with each other. Typechecking (`tsc --noEmit`) needs no
-confirmation.
+loops, or in parallel with each other.
+
+The offline `.mjs` tests in `scripts/` need no confirmation — they run under
+`node` against mocked pi APIs and make no model requests:
+
+```sh
+for f in scripts/*.test.mjs; do node "$f"; done
+```
+
+Typechecking needs no confirmation either, but there is no `tsconfig.json`,
+so `tsc --noEmit` alone just prints the help text. Pass the inputs and
+compiler options explicitly:
+
+```sh
+npx -y -p typescript tsc --noEmit --skipLibCheck \
+  --module esnext --moduleResolution bundler --target es2022 index.ts
+```
 
 ## Conventions
 
@@ -25,5 +40,36 @@ confirmation.
   with behavior.
 - Changelog follows Keep a Changelog; the version in `package.json` and the
   changelog section should match before tagging.
-- The `v0.3.0` tag has been force-moved before (it was never published to
-  npm); when releasing, confirm the tag points at the intended commit.
+- Never move a published tag. `npm publish` records the commit in `gitHead`,
+  so check the pair agrees before calling a release done:
+
+  ```sh
+  git rev-list -n1 vX.Y.Z
+  npm view @grrrck/pi-clear@X.Y.Z gitHead
+  ```
+
+## Releasing
+
+Publishing happens in CI, not from a laptop: `.github/workflows/publish.yml`
+runs when a GitHub Release is published and uses npm trusted publishing
+(OIDC), so there is no `NPM_TOKEN` secret to manage.
+
+1. Land the version bump and the changelog entry (a separate
+   `chore: release vX.Y.Z` commit as for 0.3.1, or in the feature PR itself
+   as for 0.4.0 — both are fine).
+2. Tag the release commit and push the tag:
+
+   ```sh
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+
+3. Create the GitHub Release for that tag. Publishing the release triggers
+   the workflow, which re-checks the version against the tag and the
+   changelog, typechecks, runs the offline tests, and only then publishes.
+   A release marked as a pre-release publishes to the `next` dist-tag.
+4. Do not `npm publish` locally — it would skip those checks and the
+   provenance attestation.
+
+A `release` event runs the workflow from the tagged commit, so the workflow
+file has to exist on the tag being published. Re-run it with
+`workflow_dispatch` (tag + `dry_run`) to check a release without publishing.
