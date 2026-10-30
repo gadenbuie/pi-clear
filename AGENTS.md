@@ -89,8 +89,9 @@ Constraints that are easy to trip over:
   for later tags.
 - The dist-tag is fixed at stage time. To change it, reject the staged version
   and re-run the workflow.
-- npm rejects staging a version that is already published or already waiting
-  in the stage queue.
+- An already-published version is skipped with a warning. A version still
+  waiting in the stage queue makes npm reject the staging step; reject that
+  staged version and re-run.
 - Releases must come from `main`: the workflow refuses a tag that is not an
   ancestor of `origin/main`.
 - The trusted publisher configured on npmjs.com must name `gadenbuie`,
