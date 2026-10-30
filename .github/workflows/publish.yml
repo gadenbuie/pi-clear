@@ -1,0 +1,174 @@
+# Publish @grrrck/pi-clear to npm when a GitHub Release is published.
+#
+# Auth is npm trusted publishing (OIDC): no NPM_TOKEN secret is stored, and
+# npm attaches a provenance attestation automatically because this repository
+# and the package are both public. One-time setup on npmjs.com, under the
+# package's Settings → Trusted Publishing → GitHub Actions:
+#
+#   Organization or user: gadenbuie
+#   Repository:           pi-clear
+#   Workflow filename:    publish.yml      (filename only, case-sensitive)
+#   Environment name:     (leave empty)
+#
+# And under Settings → Trusted Publishing → Allowed actions, enable
+# "npm publish" — connections created after 2026-09-03 allow only
+# `npm stage publish` by default, and a direct `npm publish` fails without it.
+#
+# Because a `release` event runs the workflow from the tagged commit, this
+# file must be present on the tag it publishes.
+
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+  # Manual runs re-check a release without publishing, and let you retry a
+  # publish after fixing a transient failure.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to verify, e.g. v0.4.0"
+        required: true
+      dry_run:
+        description: "Run checks only, do not publish"
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token for npm trusted publishing
+    steps:
+      - name: Resolve the release tag
+        id: release
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          tag="${EVENT_TAG:-$INPUT_TAG}"
+          if [ -z "$tag" ]; then
+            echo "::error::No release tag to publish."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          # A GitHub pre-release goes to the `next` dist-tag, never `latest`.
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+          echo "dry_run=${DRY_RUN:-false}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 24 ships npm >= 11.5.1, which trusted publishing requires.
+          # Note: no `registry-url`, which would write an .npmrc expecting a
+          # NODE_AUTH_TOKEN we deliberately do not set.
+          node-version: "24"
+
+      - name: Verify the version matches the tag and the changelog
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          node -e '
+            const { version } = require("./package.json");
+            const fs = require("node:fs");
+            const want = process.env.VERSION;
+            if (version !== want) {
+              console.error(`package.json is ${version} but the release tag ${process.env.TAG} implies ${want}`);
+              process.exit(1);
+            }
+            const changelog = fs.readFileSync("CHANGELOG.md", "utf8");
+            const heading = new RegExp(`^## \\[${want.replace(/\./g, "\\.")}\\]`, "m");
+            if (!heading.test(changelog)) {
+              console.error(`CHANGELOG.md has no "## [${want}]" section`);
+              process.exit(1);
+            }
+            console.log(`Releasing ${version}`);
+          '
+
+      - name: Verify the tag is on main
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$(git rev-list -n1 "$TAG")" origin/main; then
+            echo "::error::Tag $TAG is not an ancestor of origin/main; refusing to publish."
+            exit 1
+          fi
+
+      # node_modules is not published (see the `files` field); these installs
+      # are only for typechecking and the offline tests.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: |
+          npx -y -p typescript tsc --noEmit --skipLibCheck \
+            --module esnext --moduleResolution bundler --target es2022 index.ts
+
+      - name: Run the offline tests
+        run: |
+          for f in scripts/*.test.mjs; do
+            echo "### $f"
+            node "$f"
+          done
+
+      - name: Check whether this version is already on npm
+        id: published
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if npm view "@grrrck/pi-clear@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::@grrrck/pi-clear@${VERSION} is already published; skipping npm publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.published.outputs.exists == 'false' && steps.release.outputs.dry_run != 'true'
+        env:
+          DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+        run: npm publish --access public --tag "$DIST_TAG"
+
+      - name: Summarize
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
+          EXISTS: ${{ steps.published.outputs.exists }}
+          DRY_RUN: ${{ steps.release.outputs.dry_run }}
+          DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+        run: |
+          {
+            echo "### @grrrck/pi-clear ${VERSION}"
+            echo
+            echo "- tag: \`${TAG}\`"
+            echo "- dist-tag: \`${DIST_TAG}\`"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "- **dry run**: checks only, nothing published"
+            elif [ "$EXISTS" = "true" ]; then
+              echo "- already published, skipped"
+            else
+              echo "- published: https://www.npmjs.com/package/@grrrck/pi-clear/v/${VERSION}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
