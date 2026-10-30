@@ -41,7 +41,7 @@ Nothing new is required from pi. `pi.setModel()` is still absent from
 ## Flow
 
 ```
-/hand-off [--fresh | --live] [--summarizer=provider/model] [steering…]
+/hand-off [--fresh | --live] [steering…]
    │
    ├─ parse leading flags; everything else stays steering text
    │     --fresh → writer = fresh        --live → writer = live agent
@@ -269,13 +269,15 @@ Settings live in `<agent-dir>/pi-clear.json` (`<agent-dir>` defaults to
 Two separate override surfaces, easy to confuse:
 
 - **Command args** (parsed inside the `/hand-off` handler, per invocation):
-  `/hand-off --fresh`, `/hand-off --live`, `/hand-off --summarizer=<provider/model>`,
-  and the steering text that remains after the leading flags.
+  `/hand-off --fresh`, `/hand-off --live`, and the steering text that remains
+  after the leading flags. There is deliberately no `--summarizer` flag: nobody
+  hand-writes model IDs, so a writer-model preference belongs in the config
+  file and otherwise the picker just opens.
 - **pi CLI flags** (registered with `pi.registerFlag()`, per pi launch, for
   people who always want the same thing): `--hand-off-max-source-chars=<n>` and
   optionally `--hand-off-summarizer=<provider/model>`.
 
-Precedence: command arg > pi CLI flag > config file > built-in default.
+Precedence: pi CLI flag > config file > built-in default.
 
 Later choice memory (nice to have, not v1): `pi.appendEntry("pi-clear:last-handoff", …)`
 to preselect the last used summarizer model within a session.

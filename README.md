@@ -29,7 +29,7 @@ pi -e npm:@grrrck/pi-clear
 
 ```text
 /clear
-/hand-off [--fresh | --live] [--summarizer=provider/model] [steering instructions]
+/hand-off [--fresh | --live] [steering instructions]
 ```
 
 ## `/clear` behavior
@@ -76,7 +76,7 @@ The fresh pass exists because the live agent's prompt inherits the session's who
 Fresh pass flags and limits:
 
 - `--fresh` skips the writer picker and uses the fresh pass; `--live` skips it and uses the current agent. Passing both is refused before any dialog opens.
-- `--summarizer=provider/model` pins the model that writes the prompt (skips that picker too).
+- There is no command-arg model flag: if you want a specific model to write the prompt, set it in the [config file](#configuration) (or pick it from the menu).
 - The source is the post-compaction view of the session, so a compacted conversation is summarized from its summary rather than from nothing.
 - Trimming keeps the opening message, the newest turns, and a contiguous run after the opening message; the middle is replaced by `[... <n> turns omitted — <k> chars ...]` and you get a notification saying how much was dropped. Raise the budget with the settings below if that happens.
 
@@ -108,13 +108,13 @@ Optional settings live in `<agent-dir>/pi-clear.json` (`~/.pi/agent`, or `$PI_CO
 - `askSummarizerModel: false` — with `summarizerModel` set, skip the writer-model picker entirely and always use that model.
 - `maxSourceChars` — characters of conversation sent to the fresh pass (default `200000`, about 50k tokens). `0` disables the budget.
 
-A malformed file is reported as a warning and ignored. The same knobs are available per pi launch as CLI flags, and per run as command args:
+A malformed file is reported as a warning and ignored. The same knobs are available per pi launch as CLI flags:
 
 ```sh
 pi --hand-off-summarizer=anthropic/claude-haiku-4-5 --hand-off-max-source-chars=400000
 ```
 
-Precedence: command arg > pi CLI flag > config file > built-in default.
+Precedence: pi CLI flag > config file > built-in default. On the command line, only the writer choice (`--fresh` / `--live`) is available — a model ID belongs in the config file or the picker.
 
 ## Notes
 

@@ -179,20 +179,14 @@ test("command args: flags are parsed off the front and the rest is steering", ()
 	assert.deepEqual(parseHandoffArgs("  keep going  "), { steering: "keep going" });
 	assert.deepEqual(parseHandoffArgs("--fresh keep going"), { writer: "fresh", steering: "keep going" });
 	assert.deepEqual(parseHandoffArgs("--live focus on tests"), { writer: "live", steering: "focus on tests" });
-	assert.deepEqual(parseHandoffArgs("--fresh --summarizer=anthropic/claude-haiku-4-5 go"), {
-		writer: "fresh",
-		summarizerModel: "anthropic/claude-haiku-4-5",
-		steering: "go",
-	});
-	assert.deepEqual(parseHandoffArgs("--summarizer=openai/gpt-5.2"), {
-		summarizerModel: "openai/gpt-5.2",
-		steering: "",
-	});
 	// Flags only count at the front; steering text is otherwise left alone.
 	assert.deepEqual(parseHandoffArgs("mention --fresh"), { steering: "mention --fresh" });
 	assert.match(parseHandoffArgs("--fresh --live").error ?? "", /cannot be combined/);
-	assert.match(parseHandoffArgs("--summarizer").error ?? "", /needs a value/);
-	assert.match(parseHandoffArgs("--summarizer=noslash").error ?? "", /provider\/model/);
+	// There is no command-arg model flag: the writer model comes from the config
+	// file or the picker, so these tokens are just steering text.
+	assert.deepEqual(parseHandoffArgs("--summarizer=anthropic/claude-haiku-4-5 go"), {
+		steering: "--summarizer=anthropic/claude-haiku-4-5 go",
+	});
 });
 
 test("settings resolve command flag > file > default", () => {

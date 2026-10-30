@@ -15,8 +15,8 @@
  *
  * `/hand-off`: hand the conversation to another model.
  *
- * 1. The user runs `/hand-off`, optionally with flags (`--fresh`, `--live`,
- *    `--summarizer=provider/model`) and steering text after them.
+ * 1. The user runs `/hand-off`, optionally with `--fresh` or `--live` and
+ *    steering text after them.
  * 2. A dialog flow asks who writes the hand-off prompt, then collects the
  *    destination model and thinking level, then opens an editor pre-filled
  *    with the remaining command args.
@@ -37,8 +37,8 @@
  *
  * Settings live in `<agent-dir>/pi-clear.json` (read once per
  * `session_start`); CLI flags `--hand-off-max-source-chars` and
- * `--hand-off-summarizer` override the file. Precedence for the summarizer
- * model: command arg > CLI flag > config file > current model.
+ * `--hand-off-summarizer` override the file. Without a configured writer
+ * model, `/hand-off` just asks: there is no command-arg model flag.
  *
  * Mechanism:
  *   Both commands capture state as plain data into a `globalThis` property.
@@ -861,7 +861,6 @@ async function generateFreshPassPrompt(
 
 interface ParsedHandoffArgs {
 	writer?: "live" | "fresh";
-	summarizerModel?: string;
 	/** Everything after the leading flags: the steering-editor prefill. */
 	steering: string;
 	error?: string;
@@ -881,17 +880,6 @@ export function parseHandoffArgs(args: string): ParsedHandoffArgs {
 				return { ...parsed, error: "--fresh and --live cannot be combined; nothing was sent" };
 			}
 			parsed.writer = writer;
-			continue;
-		}
-		if (token === "--summarizer") {
-			return { ...parsed, error: "--summarizer needs a value: /hand-off --summarizer=provider/model" };
-		}
-		if (token.startsWith("--summarizer=")) {
-			const value = token.slice("--summarizer=".length).trim();
-			if (!value.includes("/")) {
-				return { ...parsed, error: `--summarizer needs provider/model, got "${value}"` };
-			}
-			parsed.summarizerModel = value;
 			continue;
 		}
 		break;
@@ -1217,10 +1205,10 @@ export default function (pi: ExtensionAPI) {
 					await ctx.waitForIdle();
 				}
 
-				// Summarizer model: command arg > pi CLI flag > config file.
+				// Writer model: pi CLI flag > config file. There is no command-arg
+				// flag; without a configured preference the picker just opens.
 				const flagSummarizer = pi.getFlag(FLAG_SUMMARIZER);
 				const summarizerSpec =
-					parsed.summarizerModel ??
 					(typeof flagSummarizer === "string" && flagSummarizer.trim() ? flagSummarizer.trim() : undefined) ??
 					handoffSettings.summarizerModel;
 				const pinnedModel = summarizerSpec
@@ -1235,13 +1223,11 @@ export default function (pi: ExtensionAPI) {
 						"warning",
 					);
 				}
-				// An explicit choice (command arg or pi flag) is not asked again; a
-				// config-file model is only silently accepted when
-				// `askSummarizerModel` is false.
-				const pinnedExplicitly =
-					parsed.summarizerModel !== undefined || typeof flagSummarizer === "string";
+				// A pi CLI flag is not asked about again; a config-file model is only
+				// silently accepted when `askSummarizerModel` is false.
+				const pinnedByFlag = typeof flagSummarizer === "string";
 				const askSummarizer =
-					!pinnedModel || (!pinnedExplicitly && handoffSettings.askSummarizerModel !== false);
+					!pinnedModel || (!pinnedByFlag && handoffSettings.askSummarizerModel !== false);
 
 				// 1. Choose who writes the hand-off prompt.
 				const writer = await chooseWriter(ctx, {
