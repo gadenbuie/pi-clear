@@ -1062,10 +1062,10 @@ export default function (pi: ExtensionAPI) {
 	let awaitingHandoff = false;
 	let capturedPrompt: string | undefined;
 	let flowInProgress = false;
-	// Config file contents and the resolved transcript budget, refreshed on every
-	// `session_start` (the file is read once per session, not per hand-off).
+	// Config file contents, refreshed on every `session_start` (the file is read
+	// once per session, not per hand-off). The pi CLI flag is read per hand-off
+	// so it works even if a command somehow runs before `session_start`.
 	let handoffSettings: HandoffSettings = {};
-	let maxSourceChars = DEFAULT_MAX_SOURCE_CHARS;
 
 	/**
 	 * Apply a captured model and thinking level, reporting problems as
@@ -1133,6 +1133,7 @@ export default function (pi: ExtensionAPI) {
 		steering: string,
 	): Promise<string | undefined> {
 		const messages = ctx.sessionManager.buildSessionProjection().messages;
+		const maxSourceChars = resolveMaxSourceChars(pi.getFlag(FLAG_MAX_SOURCE_CHARS), handoffSettings);
 		const source = buildMinimalTranscript(messages, maxSourceChars);
 		if (!source.text.trim()) {
 			ctx.ui.notify("No conversation to hand off", "error");
@@ -1319,7 +1320,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (event, ctx) => {
 		const loaded = loadHandoffSettings();
 		handoffSettings = loaded.settings;
-		maxSourceChars = resolveMaxSourceChars(pi.getFlag(FLAG_MAX_SOURCE_CHARS), loaded.settings);
 		if (loaded.warning) ctx.ui.notify(loaded.warning, "warning");
 
 		if (event.reason !== "new") return;
