@@ -153,9 +153,10 @@ jobs:
           fi
 
       # A re-run of the same release would try to stage a version that is
-      # already waiting in the queue, which npm rejects. Reading the queue
-      # needs auth, so this is best effort: if it fails we stage anyway and
-      # let npm report the conflict.
+      # already waiting in the queue, which npm rejects. This check is a best
+      # effort that in practice does not fire: the queue listing endpoint
+      # answers 401 to an OIDC token, so expect the notice below, not an
+      # answer. npm's own conflict error is the real backstop.
       - name: Check whether this version is already staged
         id: staged
         env:
