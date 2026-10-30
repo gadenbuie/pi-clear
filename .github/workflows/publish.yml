@@ -205,9 +205,13 @@ jobs:
           DIST_TAG: ${{ steps.release.outputs.dist_tag }}
         run: |
           set -o pipefail
-          # The tag is fixed once staged: to change it, reject the staged
-          # version and re-run this workflow.
-          npm stage publish --access public --tag "$DIST_TAG" 2>&1 | tee stage.log
+          # `latest` is the default, so only pass a tag when we need a
+          # different one. Nothing here needs the dist-tag permission.
+          if [ "$DIST_TAG" = "latest" ]; then
+            npm stage publish --access public 2>&1 | tee stage.log
+          else
+            npm stage publish --access public --tag "$DIST_TAG" 2>&1 | tee stage.log
+          fi
 
       - name: Summarize
         env:
