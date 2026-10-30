@@ -25,11 +25,15 @@ npx -y -p typescript tsc --noEmit --skipLibCheck \
 Cut releases from a GitHub Release. Never `npm publish` from a laptop.
 
 1. Bump `package.json` and add the `## [X.Y.Z]` changelog section on `main`.
-2. `git tag vX.Y.Z && git push origin vX.Y.Z`
-3. Publish a GitHub Release for that tag; CI validates and stages it.
-4. Approve the staged version: npmjs.com → the package → *Staged Packages*, or
+2. Show the user that changelog section — it becomes the release notes — and
+   wait for them to approve the wording. Expect edits.
+3. With their explicit approval, tag and push:
+   `git tag vX.Y.Z && git push origin vX.Y.Z`
+4. With their explicit approval, publish a GitHub Release for that tag; CI
+   validates and stages it.
+5. Approve the staged version: npmjs.com → the package → *Staged Packages*, or
    `npm stage approve <stage-id>`. Nothing installs from npm until you do.
-5. Verify the published commit is the tag:
+6. Verify the published commit is the tag:
 
    ```sh
    git rev-list -n1 vX.Y.Z
@@ -46,4 +50,4 @@ Rules:
   `latest`.
 - To check a release without staging it:
   `gh workflow run publish.yml -f tag=vX.Y.Z -f dry_run=true`
-- Never move a published tag.
+- Never move or delete a tag once it is pushed; ask the user first.
