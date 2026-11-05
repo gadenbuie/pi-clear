@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Flag `--same`: skips the destination model and thinking-level pickers and re-uses the current session's model and thinking level.
+
 ### Changed
 
 - `/hand-off <instructions>` uses the inline steering text as-is: the steering editor only opens when no instructions were typed after the command, so passing steering on the command line no longer adds a dialog to confirm or edit it.

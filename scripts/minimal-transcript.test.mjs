@@ -179,8 +179,15 @@ test("command args: flags are parsed off the front and the rest is steering", ()
 	assert.deepEqual(parseHandoffArgs("  keep going  "), { steering: "keep going" });
 	assert.deepEqual(parseHandoffArgs("--fresh keep going"), { writer: "fresh", steering: "keep going" });
 	assert.deepEqual(parseHandoffArgs("--live focus on tests"), { writer: "live", steering: "focus on tests" });
+	assert.deepEqual(parseHandoffArgs("--same"), { steering: "", same: true });
+	assert.deepEqual(parseHandoffArgs("--fresh --same keep going"), {
+		writer: "fresh",
+		same: true,
+		steering: "keep going",
+	});
 	// Flags only count at the front; steering text is otherwise left alone.
 	assert.deepEqual(parseHandoffArgs("mention --fresh"), { steering: "mention --fresh" });
+	assert.deepEqual(parseHandoffArgs("mention --same"), { steering: "mention --same" });
 	assert.match(parseHandoffArgs("--fresh --live").error ?? "", /cannot be combined/);
 	// There is no command-arg model flag: the writer model comes from the config
 	// file or the picker, so these tokens are just steering text.

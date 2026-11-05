@@ -13,14 +13,16 @@
  * `/clear` starts an equally fresh session, then restores the model and
  * thinking level that were active when you cleared.
  *
- * `/hand-off`: hand the conversation to another model.
+ * `/hand-off`: hand the conversation to another model (or back to the same
+ * one, with `--same`).
  *
  * 1. The user runs `/hand-off`, optionally with `--fresh` or `--live` and
  *    steering text after them.
  * 2. A dialog flow asks who writes the hand-off prompt, then collects the
- *    destination model and thinking level, then collects steering
- *    instructions: text typed inline after `/hand-off` is used as-is, and an
- *    editor opens only when no inline steering was passed.
+ *    destination model and thinking level (skipped by `--same`, which reuses
+ *    the current session's values), then collects steering instructions:
+ *    text typed inline after `/hand-off` is used as-is, and an editor opens
+ *    only when no inline steering was passed.
  * 3. The hand-off prompt is written by one of two writers:
  *    - the **live agent** (default, first in the picker): the extension sends
  *      the current agent a custom message asking it to write its next message
@@ -914,6 +916,8 @@ async function generateFreshPassPrompt(
 
 interface ParsedHandoffArgs {
 	writer?: "live" | "fresh";
+	/** `--same`: skip the destination pickers and reuse the current session's model and thinking level. */
+	same?: boolean;
 	/** Everything after the leading flags: the steering-editor prefill. */
 	steering: string;
 	error?: string;
@@ -933,6 +937,10 @@ export function parseHandoffArgs(args: string): ParsedHandoffArgs {
 				return { ...parsed, error: "--fresh and --live cannot be combined; nothing was sent" };
 			}
 			parsed.writer = writer;
+			continue;
+		}
+		if (token === "--same") {
+			parsed.same = true;
 			continue;
 		}
 		break;
@@ -1315,13 +1323,24 @@ export default function (pi: ExtensionAPI) {
 					writerReasoning = chosen.reasoning;
 				}
 
-				// 2. Pick the destination model.
-				const target = await pickTargetModel(ctx);
-				if (!target) return;
-
-				// 3. Pick the thinking level (a scoped `model:level` entry pins it).
-				const level = target.thinkingLevel ?? (await selectThinkingLevel(ctx));
-				if (level === undefined) return;
+				// 2–3. Destination model and thinking level. `--same` reuses the current
+				// session's values and skips both pickers (a scoped `model:level` entry
+				// pins the level on the picked-model path).
+				let target: PickedModel | undefined;
+				let level: ThinkingLevel | undefined;
+				if (parsed.same) {
+					if (!ctx.model) {
+						ctx.ui.notify("--same: the current session has no model to reuse", "error");
+						return;
+					}
+					target = { model: ctx.model };
+					level = ctx.thinkingLevel;
+				} else {
+					target = await pickTargetModel(ctx);
+					if (!target) return;
+					level = target.thinkingLevel ?? (await selectThinkingLevel(ctx));
+					if (level === undefined) return;
+				}
 
 				// 4. Steering instructions: when passed inline as `/hand-off <instructions>`
 				// they are used as-is; only an empty steering text opens the editor.

@@ -174,6 +174,29 @@ test("--fresh skips the writer picker, writes with one call, and never touches t
 	);
 });
 
+test("--same reuses the current model and thinking level and skips both pickers", async () => {
+	const result = await runHandoff({ args: "--same --fresh" });
+
+	assert.ok(
+		!result.dialogs.some((dialog) => /hand off to (provider|model)|^Thinking level$/.test(dialog.title)),
+		"--same must skip the destination model and thinking-level pickers",
+	);
+	assert.deepEqual(result.applied, { model: current, level: "medium" }, "--same reuses the current values");
+});
+
+test("--same keeps the writer dialogs and the steering editor", async () => {
+	const result = await runHandoff({ args: "--same --fresh" });
+	assert.deepEqual(
+		result.dialogs.map((dialog) => dialog.title),
+		[
+			"Hand-off writer provider",
+			"Hand-off writer model",
+			"Thinking level for the hand-off writer",
+			"Steering for the hand-off prompt (sent to the hand-off writer)",
+		],
+	);
+});
+
 test("inline steering is used as-is and skips the steering editor", async () => {
 	const fresh = await runHandoff({ args: "--fresh mention the dry run" });
 	assert.ok(
