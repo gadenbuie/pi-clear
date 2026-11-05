@@ -18,8 +18,9 @@
  * 1. The user runs `/hand-off`, optionally with `--fresh` or `--live` and
  *    steering text after them.
  * 2. A dialog flow asks who writes the hand-off prompt, then collects the
- *    destination model and thinking level, then opens an editor pre-filled
- *    with the remaining command args.
+ *    destination model and thinking level, then collects steering
+ *    instructions: text typed inline after `/hand-off` is used as-is, and an
+ *    editor opens only when no inline steering was passed.
  * 3. The hand-off prompt is written by one of two writers:
  *    - the **live agent** (default, first in the picker): the extension sends
  *      the current agent a custom message asking it to write its next message
@@ -1322,13 +1323,17 @@ export default function (pi: ExtensionAPI) {
 				const level = target.thinkingLevel ?? (await selectThinkingLevel(ctx));
 				if (level === undefined) return;
 
-				// 4. Collect steering instructions, pre-filled from the remaining args.
-				const steering = await ctx.ui.editor(
-					writer.kind === "live"
-						? "Steering for the hand-off prompt (sent to the current agent)"
-						: "Steering for the hand-off prompt (sent to the hand-off writer)",
-					parsed.steering.trim(),
-				);
+				// 4. Steering instructions: when passed inline as `/hand-off <instructions>`
+				// they are used as-is; only an empty steering text opens the editor.
+				const inlineSteering = parsed.steering.trim();
+				const steering =
+					inlineSteering ||
+					(await ctx.ui.editor(
+						writer.kind === "live"
+							? "Steering for the hand-off prompt (sent to the current agent)"
+							: "Steering for the hand-off prompt (sent to the hand-off writer)",
+						"",
+					));
 				if (steering === undefined) return;
 
 				// 5. Write the hand-off prompt with the chosen writer.

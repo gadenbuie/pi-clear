@@ -3,10 +3,11 @@
 
 Two scripted scenarios, each in its own pi process:
 
-  live   /hand-off through every dialog: the writer picker (the live agent),
-         then model, thinking level, and steering. The agent writes the
-         hand-off prompt as its next message; the replacement session must use
-         the model chosen in the dialog, keep the chosen thinking level, and
+  live   /hand-off with inline steering: the writer picker (the live agent),
+         then model and thinking level. The inline steering text is used
+         as-is, so no steering editor opens. The agent writes the hand-off
+         prompt as its next message; the replacement session must use the
+         model chosen in the dialog, keep the chosen thinking level, and
          receive the prompt (with the provenance comment) via set_editor_text.
 
   fresh  a normal turn first, then /hand-off --fresh: the writer picker is
@@ -231,7 +232,7 @@ def check_provenance(editor_text, initial_session):
 
 
 def scenario_live():
-	"""The live agent path: writer picker → model → thinking → steering."""
+	"""The live agent path: writer picker → model → thinking → inline steering."""
 	rpc = RpcSession("live")
 	try:
 		initial_state = wait_for_startup(rpc)
@@ -239,9 +240,8 @@ def scenario_live():
 		initial_session = initial_state["sessionId"]
 		print(f"[live] initial: {initial_model} in session {initial_session}")
 
-		# The RPC prompt response only arrives after the command handler finishes,
-		# which requires answering the dialogs first, so it is checked at the end.
-		prompt_request_id = rpc.send("prompt", message="/hand-off")
+		# Inline steering: no steering editor opens; the args are used as-is.
+		prompt_request_id = rpc.send("prompt", message="/hand-off Mention that the smoke test passed.")
 
 		# Dialog 0: who writes the hand-off prompt? Enter takes the live agent.
 		writer_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
@@ -260,10 +260,6 @@ def scenario_live():
 		if "writer" in (level_dialog.get("title") or "").lower():
 			fail(f"[live] the live path must not ask for a writer thinking level: {level_dialog.get('title')!r}")
 		rpc.respond_ui(level_dialog["id"], value="high")
-
-		# Dialog 3: steering editor.
-		editor_dialog = rpc.next_ui_request("editor", DIALOG_TIMEOUT)
-		rpc.respond_ui(editor_dialog["id"], value="Mention that the smoke test passed.")
 
 		# The agent now writes the hand-off prompt.
 		state = wait_for_handoff(rpc, initial_session, target_model)

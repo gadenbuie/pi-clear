@@ -60,6 +60,7 @@ async function runHandoff({
 	const applied = {};
 	let editorText;
 	let sendMessageCalls = 0;
+	const sentMessages = [];
 	const commands = new Map();
 	const handlers = new Map();
 
@@ -68,8 +69,9 @@ async function runHandoff({
 		registerFlag: () => {},
 		getFlag: (name) => (name === "hand-off-max-source-chars" ? flagMaxChars : undefined),
 		on: (event, handler) => handlers.set(event, handler),
-		sendMessage: () => {
+		sendMessage: (message) => {
 			sendMessageCalls++;
+			sentMessages.push(message);
 		},
 		setModel: async (chosen) => {
 			applied.model = chosen;
@@ -144,7 +146,7 @@ async function runHandoff({
 	// again inside newSession for the replacement session.
 	await handlers.get("session_start")({ reason: "startup" }, ctx);
 	await commands.get("hand-off").handler(args, ctx);
-	return { notifications, dialogs, requests, applied, editorText, sendMessageCalls };
+	return { notifications, dialogs, requests, applied, editorText, sendMessageCalls, sentMessages };
 }
 
 const textOf = (request) => request.message.content[0].text;
@@ -168,8 +170,31 @@ test("--fresh skips the writer picker, writes with one call, and never touches t
 			"Hand off to provider",
 			"Hand off to model",
 			"Thinking level",
-			"Steering for the hand-off prompt (sent to the hand-off writer)",
 		],
+	);
+});
+
+test("inline steering is used as-is and skips the steering editor", async () => {
+	const fresh = await runHandoff({ args: "--fresh mention the dry run" });
+	assert.ok(
+		!fresh.dialogs.some((dialog) => /steering/i.test(dialog.title)),
+		"inline steering must not open the steering editor",
+	);
+	assert.match(textOf(fresh.requests[0]), /## What the hand-off must cover\nmention the dry run/);
+
+	const live = await runHandoff({ args: "--live focus on tests" });
+	assert.ok(
+		!live.dialogs.some((dialog) => /steering/i.test(dialog.title)),
+		"inline steering must not open the steering editor on the live path",
+	);
+	assert.match(live.sentMessages.at(-1).content, /focus on tests/);
+});
+
+test("with no inline steering, the steering editor still opens", async () => {
+	const result = await runHandoff({ args: "--fresh" });
+	assert.ok(
+		result.dialogs.some((dialog) => /steering/i.test(dialog.title)),
+		"no inline steering opens the steering editor",
 	);
 });
 

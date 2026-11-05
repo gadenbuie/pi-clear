@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `/hand-off <instructions>` uses the inline steering text as-is: the steering editor only opens when no instructions were typed after the command, so passing steering on the command line no longer adds a dialog to confirm or edit it.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added
