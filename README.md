@@ -79,6 +79,7 @@ Fresh pass flags and limits:
 
 - `--fresh` skips the writer picker and uses the fresh pass; `--live` skips it and uses the current agent. Passing both is refused before any dialog opens.
 - `--same` skips the same-or-pick dialog and re-uses the current session's model and thinking level. It combines freely with `--fresh` / `--live` and inline steering.
+- Flags are only recognized at the front of the command args: `/hand-off --same fix the tests` parses the flag, but `/hand-off fix the tests --same` passes `--same` through as steering text. Anything after the first non-flag token is steering.
 - There is no command-arg model flag: if you want a specific model to write the prompt, set it in the [config file](#configuration) (or pick it from the menu).
 - The source is the post-compaction view of the session, so a compacted conversation is summarized from its summary rather than from nothing.
 - Trimming keeps the opening message, the newest turns, and a contiguous run after the opening message; the middle is replaced by `[... <n> turns omitted — <k> chars ...]` and you get a notification saying how much was dropped. Raise the budget with the settings below if that happens.
