@@ -30,8 +30,11 @@ async function openPicker({ scopedModels = [], model = other } = {}) {
 		ui: {
 			notify: (message) => notifications.push(message),
 			// Accept the writer picker's first entry (the live agent), which is the
-			// path that opens the model picker under test.
-			select: async (_title, options) => options[0],
+			// path that opens the model picker under test, and answer the
+			// same-or-pick dialog with its second option so the destination pickers
+			// open.
+			select: async (_title, options) =>
+				options.find((option) => option.startsWith("Pick a model")) ?? options[0],
 			custom: async (factory) => {
 				component = factory(
 					{ requestRender() {} },

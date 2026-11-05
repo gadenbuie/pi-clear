@@ -18,9 +18,10 @@
  *
  * 1. The user runs `/hand-off`, optionally with `--fresh` or `--live` and
  *    steering text after them.
- * 2. A dialog flow asks who writes the hand-off prompt, then collects the
- *    destination model and thinking level (skipped by `--same`, which reuses
- *    the current session's values), then collects steering instructions:
+ * 2. A dialog flow asks who writes the hand-off prompt, then asks whether the
+ *    next session keeps the current model and thinking level (first option,
+ *    so Enter keeps them) or opens the destination pickers — `--same` skips
+ *    that dialog and re-uses the current values. Then steering instructions:
  *    text typed inline after `/hand-off` is used as-is, and an editor opens
  *    only when no inline steering was passed.
  * 3. The hand-off prompt is written by one of two writers:
@@ -171,6 +172,24 @@ async function selectModel(
 	if (chosen === undefined) return undefined;
 	const index = labelIndex(chosen, labels);
 	return index === -1 ? undefined : ordered[index];
+}
+
+/**
+ * Same-or-pick picker between the writer and destination dialogs. The first
+ * option re-uses the current session's model and thinking level in one Enter
+ * press; the second opens the destination pickers. Without a current model
+ * there is nothing to re-use, so the destination pickers open directly.
+ */
+async function chooseSameOrPick(ctx: ExtensionContext): Promise<"same" | "pick" | undefined> {
+	if (!ctx.model) return "pick";
+	const labels = [
+		`${SAME_SETTINGS_LABEL}  (${ctx.model.provider}/${ctx.model.id}${ctx.thinkingLevel ? ` · ${ctx.thinkingLevel}` : ""})`,
+		PICK_SETTINGS_LABEL,
+	];
+	const chosen = await ctx.ui.select("Model for the next session", labels);
+	if (chosen === undefined) return undefined;
+	const index = labelIndex(chosen, labels);
+	return index === 0 ? "same" : index === 1 ? "pick" : undefined;
 }
 
 /**
@@ -1066,6 +1085,8 @@ interface WriterOptions {
 
 const WRITER_LIVE_LABEL = "This agent — full context and tools";
 const WRITER_FRESH_OTHER_LABEL = "Fresh pass — another model…";
+const SAME_SETTINGS_LABEL = "Same model and thinking level";
+const PICK_SETTINGS_LABEL = "Pick a model and thinking level…";
 
 /** Pick the hand-off writer: the live agent, or a fresh pass with a chosen model. */
 async function chooseWriter(ctx: ExtensionContext, options: WriterOptions): Promise<WriterChoice | undefined> {
@@ -1323,12 +1344,15 @@ export default function (pi: ExtensionAPI) {
 					writerReasoning = chosen.reasoning;
 				}
 
-				// 2–3. Destination model and thinking level. `--same` reuses the current
-				// session's values and skips both pickers (a scoped `model:level` entry
-				// pins the level on the picked-model path).
+				// 2–3. Destination model and thinking level. The same-or-pick picker's
+				// first option re-uses the current session's values in one Enter press;
+				// `--same` skips that dialog. On the picked-model path a scoped
+				// `model:level` entry pins the level.
+				const reuse = parsed.same ? "same" : await chooseSameOrPick(ctx);
+				if (!reuse) return;
 				let target: PickedModel | undefined;
 				let level: ThinkingLevel | undefined;
-				if (parsed.same) {
+				if (reuse === "same") {
 					if (!ctx.model) {
 						ctx.ui.notify("--same: the current session has no model to reuse", "error");
 						return;

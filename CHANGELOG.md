@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Flag `--same`: skips the destination model and thinking-level pickers and re-uses the current session's model and thinking level.
+- A **same-or-pick dialog** after the writer picker: *Same model and thinking level* (first, so Enter re-uses the current settings) or *Pick a model and thinking level…*, which opens the destination pickers.
+- Flag `--same`: skips the same-or-pick dialog and re-uses the current session's model and thinking level, as if the first option was chosen.
 
 ### Changed
 

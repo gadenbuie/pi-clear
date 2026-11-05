@@ -167,11 +167,38 @@ test("--fresh skips the writer picker, writes with one call, and never touches t
 			"Hand-off writer provider",
 			"Hand-off writer model",
 			"Thinking level for the hand-off writer",
-			"Hand off to provider",
-			"Hand off to model",
-			"Thinking level",
+			"Model for the next session",
 		],
 	);
+});
+
+test("the same-or-pick picker: Enter keeps the current settings", async () => {
+	const result = await runHandoff({ args: "--fresh" });
+
+	const picker = result.dialogs.find((dialog) => dialog.title === "Model for the next session");
+	assert.ok(picker, "the same-or-pick picker opens after the writer dialogs");
+	assert.match(picker.options[0], /^Same model and thinking level/);
+	assert.equal(picker.options[1], "Pick a model and thinking level…");
+	assert.ok(
+		!result.dialogs.some((dialog) => /hand off to (provider|model)|^Thinking level$/.test(dialog.title)),
+		"the first option skips the destination pickers",
+	);
+	assert.deepEqual(result.applied, { model: current, level: "medium" }, "the first option re-uses the current values");
+});
+
+test("choosing the second option opens the destination pickers", async () => {
+	const result = await runHandoff({
+		args: "--fresh",
+		pick: (title, options) =>
+			title === "Model for the next session"
+				? options.find((option) => option.startsWith("Pick a model"))
+				: undefined,
+	});
+
+	assert.ok(result.dialogs.some((dialog) => dialog.title === "Hand off to provider"));
+	assert.ok(result.dialogs.some((dialog) => dialog.title === "Hand off to model"));
+	assert.ok(result.dialogs.some((dialog) => dialog.title === "Thinking level"));
+	assert.deepEqual(result.applied.model, current, "the destination pickers still default to the current model");
 });
 
 test("--same reuses the current model and thinking level and skips both pickers", async () => {

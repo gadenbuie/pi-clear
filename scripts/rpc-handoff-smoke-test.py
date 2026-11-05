@@ -4,15 +4,18 @@
 Two scripted scenarios, each in its own pi process:
 
   live   /hand-off with inline steering: the writer picker (the live agent),
-         then model and thinking level. The inline steering text is used
+         then the same-or-pick dialog (answered with "pick"), then destination
+         model and thinking level. The inline steering text is used
          as-is, so no steering editor opens. The agent writes the hand-off
          prompt as its next message; the replacement session must use the
          model chosen in the dialog, keep the chosen thinking level, and
          receive the prompt (with the provenance comment) via set_editor_text.
 
   fresh  a normal turn first, then /hand-off --fresh: the writer picker is
-         skipped, the summarizer model and thinking-level pickers open, and the
-         prompt is written by a single out-of-band model call. No agent turn may
+         skipped, the summarizer model and thinking-level pickers open, and
+         the same-or-pick dialog is answered with "same" (Enter keeps the
+         current destination). The prompt is written by a single out-of-band
+         model call. No agent turn may
          start during the hand-off, and the editor text must carry the
          provenance comment with the *previous* session id.
 
@@ -252,10 +255,18 @@ def scenario_live():
 			fail(f"[live] the live agent should be first in the writer picker: {writer_options}")
 		rpc.respond_ui(writer_dialog["id"], value=WRITER_LIVE_LABEL)
 
-		# Dialog 1: destination model.
+		# Dialog 1: same-or-pick. The second option opens the destination pickers.
+		same_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
+		same_options = same_dialog.get("options") or []
+		pick_label = next((o for o in same_options if o.startswith("Pick a model")), None)
+		if not pick_label:
+			fail(f"[live] expected the same-or-pick dialog, got {same_dialog.get('title')!r}: {same_options}")
+		rpc.respond_ui(same_dialog["id"], value=pick_label)
+
+		# Dialog 2: destination model.
 		target_model = choose_model(rpc, initial_model, "hand off to model", prefer_other=True)
 
-		# Dialog 2: destination thinking level (the live agent writes with its own).
+		# Dialog 3: destination thinking level (the live agent writes with its own).
 		level_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
 		if "writer" in (level_dialog.get("title") or "").lower():
 			fail(f"[live] the live path must not ask for a writer thinking level: {level_dialog.get('title')!r}")
@@ -338,10 +349,15 @@ def scenario_fresh():
 		else:
 			print("[fresh] writer thinking: skipped (model has no reasoning controls)")
 
-		target_model = choose_model(rpc, initial_model, "hand off to model", prefer_other=True, dialog=next_dialog)
-
-		level_dialog = rpc.next_ui_request("select", DIALOG_TIMEOUT)
-		rpc.respond_ui(level_dialog["id"], value="low")
+		# The same-or-pick picker: the first option keeps the current model and
+		# thinking level, so no destination pickers open.
+		same_options = next_dialog.get("options") or []
+		same_label = next((o for o in same_options if o.startswith("Same model")), None)
+		if not same_label:
+			fail(f"[fresh] expected the same-or-pick dialog, got {next_dialog.get('title')!r}: {same_options}")
+		print("[fresh] same-or-pick:", same_label)
+		rpc.respond_ui(next_dialog["id"], value=same_label)
+		target_model = initial_model
 
 		editor_dialog = rpc.next_ui_request("editor", DIALOG_TIMEOUT)
 		rpc.respond_ui(editor_dialog["id"], value="Mention that the fresh pass smoke test passed.")

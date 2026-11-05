@@ -50,7 +50,7 @@ When `/hand-off` runs, the extension:
 
 0. **chooses who writes the hand-off prompt** — see [Choosing the writer](#choosing-the-writer). The picker is skipped when `--fresh` or `--live` was passed
 1. waits for the agent to become idle if needed
-2. opens a model picker, then a thinking level picker, then collects steering instructions: text you typed after `/hand-off` (and its flags) is used as-is, and the steering editor only opens when you passed none. `--same` skips both pickers and re-uses the current model and thinking level. Defaults are sensible: the current model and thinking level are preselected, so pressing Enter at each step keeps them. The model picker respects your session's model scoping (`--models` / `enabledModels`, the same set `/scoped-models` shows) and offers a Tab toggle between scoped and all models. In non-TUI modes it falls back to plain dialogs: the scoped list when configured, otherwise a two-level provider → model pick so the dialog never floods the screen
+2. asks whether the next session keeps the current model and thinking level — the first option, so pressing Enter keeps them — or opens a model picker, then a thinking level picker, then collects steering instructions: text you typed after `/hand-off` (and its flags) is used as-is, and the steering editor only opens when you passed none. `--same` skips the same-or-pick dialog and re-uses the current model and thinking level. The model picker respects your session's model scoping (`--models` / `enabledModels`, the same set `/scoped-models` shows) and offers a Tab toggle between scoped and all models. In non-TUI modes it falls back to plain dialogs: the scoped list when configured, otherwise a two-level provider → model pick so the dialog never floods the screen
 3. writes the hand-off prompt with the chosen writer — the live agent, or a single off-screen model call over a minimal reconstruction of the conversation
 4. prepends a provenance comment naming the source session, starts a new session, applies the model and thinking level you picked, and inserts the prompt into the editor via `ctx.ui.setEditorText()`
 5. stops there: the prompt sits in the editor for you to review, edit, and submit yourself
@@ -78,7 +78,7 @@ When the writer model supports reasoning, the fresh pass also asks for its **thi
 Fresh pass flags and limits:
 
 - `--fresh` skips the writer picker and uses the fresh pass; `--live` skips it and uses the current agent. Passing both is refused before any dialog opens.
-- `--same` skips the destination model and thinking-level pickers and re-uses the current session's model and thinking level. It combines freely with `--fresh` / `--live` and inline steering.
+- `--same` skips the same-or-pick dialog and re-uses the current session's model and thinking level. It combines freely with `--fresh` / `--live` and inline steering.
 - There is no command-arg model flag: if you want a specific model to write the prompt, set it in the [config file](#configuration) (or pick it from the menu).
 - The source is the post-compaction view of the session, so a compacted conversation is summarized from its summary rather than from nothing.
 - Trimming keeps the opening message, the newest turns, and a contiguous run after the opening message; the middle is replaced by `[... <n> turns omitted — <k> chars ...]` and you get a notification saying how much was dropped. Raise the budget with the settings below if that happens.
