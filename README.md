@@ -30,6 +30,7 @@ pi -e npm:@grrrck/pi-clear
 ```text
 /clear
 /hand-off [--fresh | --live] [--same] [steering instructions]
+/hand-off-chain <N | off | status> [--max-cost USD] [task]
 ```
 
 ## `/clear` behavior
@@ -93,6 +94,67 @@ Every hand-off prompt (from either writer) starts with a comment naming the sess
 ```
 
 It's a comment, so it doesn't read as part of the task and stays visible in the editor for you to check. The extension adds it after the prompt is written, so the writing model can't reword or drop it.
+
+## Autonomous chains
+
+Long plans outgrow one context window. `/hand-off-chain` lets a run keep going without you: when an agent finishes its part, it hands off to a fresh agent, which picks up where it left off, until the work is done, something goes wrong, or a limit you set is reached.
+
+It's off unless you run it. Use `/hand-off` when you want to review each hand-off yourself.
+
+### Quick start
+
+```text
+/hand-off-chain 8 --max-cost 5 Do the next unchecked item in PLAN.md, run the tests, tick it off, and commit.
+```
+
+That arms a chain of up to 8 hand-offs, with a $5 limit. The agent you're talking to is step 0 and isn't counted, so the chain can run up to 9 agents. Your task goes to the current agent. Each new agent starts fresh and sees only the previous agent's hand-off plus whatever is on disk, so the task should say where progress is tracked, such as a plan file with checkboxes or the git log.
+
+If you leave the task out, the chain is armed and waits; type your task as your next message.
+
+Every agent runs with your full tool access and nobody watches live, so run chains in a repo you can recover, and set `--max-cost`. Every session uses the model and thinking level you started with.
+
+### How an agent ends
+
+Each agent is told how to finish. Its entire final message is one of:
+
+- `<hand-off>…</hand-off>`: what it did, what's next, and any gotchas. The next session starts from this.
+- `<hand-off done/>`: the work is complete.
+- `<hand-off pause>question</hand-off>`: it needs an answer from you. The chain waits in that session; reply there and it carries on when the agent finishes.
+- `<hand-off stop>reason</hand-off>`: it can't continue (blocked, tests failing). The chain ends and you see the reason.
+
+If an agent forgets the tag, it gets one reminder before the chain gives up.
+
+### Cost limit
+
+`--max-cost` takes dollars and goes before your task. As spending nears the limit, the agent is nudged to wrap up:
+
+| Spent | What the agent is told |
+| --- | --- |
+| 80% | Heads-up: plan to wrap up soon. |
+| 95% | Stop now: finish only the final tasks and leave things consistent. |
+| 98% | Out of budget: write a final status summary. |
+| 100% | The session is aborted and the chain stops. |
+
+Past 95%, the chain won't start a new session. Costs are only known after each model call, so one expensive turn can overshoot, and models that don't report cost can't be limited this way. Without `--max-cost` there is no limit.
+
+### When it stops
+
+You get a notification with the reason and the total spent. A chain stops when:
+
+- an agent signals `done` or `stop` (a `pause` waits for you instead);
+- the last allowed agent asks for another hand-off;
+- the cost limit is hit;
+- you abort a run, or an agent fails to finish cleanly;
+- an agent ignores the reminder to end with a tag.
+
+### Checking on it
+
+- `/hand-off-chain status` shows the current step, spend so far, and the sessions in the chain.
+- `/hand-off-chain off` disarms it.
+
+Each session the chain leaves records its model, tokens, and cost, and a chain that stops records why in the session it stopped in, and every session after the first begins with a comment naming the step and the session it came from. You can resume any of them with `/resume`.
+
+A chain lives in the running pi process, so quitting pi ends it, and each process can run one chain at a time. Starting a new session yourself doesn't disturb it.
 
 ## Configuration
 

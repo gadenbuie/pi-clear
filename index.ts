@@ -40,6 +40,29 @@
  *    thinking level, and inserts the prompt into the editor.
  * 5. The user reviews, edits, and submits the prompt themselves.
  *
+ * `/hand-off-chain N [--max-cost USD] [task]`: opt-in autonomous chain. Arms a run of up to
+ * N hand-offs: the current agent is step 0 and not counted, so up to N+1 sessions. Each agent ends its work with a final
+ * message that is exactly one `<hand-off>…</hand-off>` block; on
+ * `agent_settled` the extension extracts it and replaces the session through
+ * an internal command (event contexts cannot), keeping the same model and
+ * thinking level, and submits the block plus a provenance header and the
+ * chain protocol as the next agent's first message. The chain state lives on
+ * `globalThis` for the whole run. An agent may instead end with
+ * `<hand-off done/>`, `<hand-off stop>reason</hand-off>`, or
+ * `<hand-off pause>question</hand-off>` (the chain stays armed on that session and
+ * resumes at its next settle, once the user has replied). A missing or
+ * malformed tag gets one reminder message, then the chain stops. It also stops,
+ * with a notification (including total spent), on: abort, a non-clean stop,
+ * the step limit, `--max-cost` (escalating steering warnings at 80/95/98% of
+ * the limit after tool turns, a hard abort at 100%, and no new session at
+ * 95%+), or a watchdog if the internal advance command never starts.
+ * The decision logic is the pure `decideChainAction`. Arming refuses while a
+ * chain runs in this session and replaces one waiting on another session.
+ * Tags in code fences never count. Each hop appends a
+ * `pi-clear:chain-hop` session entry (step, model, tokens, cost), and every
+ * stop appends a `pi-clear:chain-stop` entry (step, reason, spent).
+ * `/hand-off-chain off` disarms; bare or `status` reports.
+ *
  * Settings live in `<agent-dir>/pi-clear.json` (read once per
  * `session_start`); CLI flags `--hand-off-max-source-chars` and
  * `--hand-off-summarizer` override the file. Without a configured writer
@@ -1142,6 +1165,314 @@ async function chooseWriter(ctx: ExtensionContext, options: WriterOptions): Prom
 	}
 }
 
+// ============================================================================
+// Autonomous chain (`/hand-off-chain N`)
+// ============================================================================
+
+/**
+ * Chain state, kept on `globalThis` for the whole run (unlike `SessionHandoff`
+ * it is not consumed) so the depth counter survives session replacement.
+ */
+interface ChainState {
+	/** Maximum number of hand-offs; the agent that armed the chain is step 0 and not counted. */
+	maxSteps: number;
+	/**
+	 * Session IDs in the order they ran, latest last. The last one is the
+	 * session the chain is waiting on (other sessions never advance it), and
+	 * the length minus one is the current step.
+	 */
+	sessionIds: string[];
+	/** Stop before the next hand-off once spent cost reaches this many dollars. */
+	maxCost?: number;
+	/** Cost of the sessions already left; the current session's cost is added on top. */
+	spent: number;
+	/** The agent asked the user a question and the chain is waiting for them (cleared on the next settle). */
+	paused?: boolean;
+	/** Highest budget warning level already sent in the current session (0 = none). */
+	warned?: number;
+	/** The current session was already asked once to fix a missing/malformed final message. */
+	nudged?: boolean;
+	/**
+	 * A hand-off extracted from the settled agent, waiting for the step command.
+	 * `started` flips once that command runs, so a watchdog can tell "never ran".
+	 */
+	pending?: { prompt: string; started?: boolean };
+}
+
+const CHAIN_KEY = "__pi_clear_chain__";
+const CHAIN_COMMAND = "pi-clear-chain-advance";
+/** How long the internal advance command has to start before the chain gives up. */
+const ADVANCE_WATCHDOG_MS = 10_000;
+const CHAIN_PROTOCOL_TYPE = "pi-clear:chain-protocol";
+const CHAIN_HOP_ENTRY_TYPE = "pi-clear:chain-hop";
+const CHAIN_STOP_ENTRY_TYPE = "pi-clear:chain-stop";
+
+function readChain(): ChainState | undefined {
+	return (globalThis as Record<string, unknown>)[CHAIN_KEY] as ChainState | undefined;
+}
+
+/** 0-based position of the current agent: the one that armed the chain is step 0. */
+function chainStep(chain: ChainState): number {
+	return chain.sessionIds.length - 1;
+}
+
+function writeChain(chain: ChainState | undefined): void {
+	const store = globalThis as Record<string, unknown>;
+	if (chain) store[CHAIN_KEY] = chain;
+	else delete store[CHAIN_KEY];
+}
+
+export type ChainArgs =
+	| { kind: "start"; maxSteps: number; maxCost?: number; task: string }
+	| { kind: "off" }
+	| { kind: "status" }
+	| { kind: "error"; error: string };
+
+const CHAIN_USAGE = "/hand-off-chain needs a positive number of hand-offs, or `off` / `status`";
+
+/**
+ * Parse `<N|off|status> [--max-cost USD] [task text]`; no arguments means
+ * `status`. Like `/hand-off`, flags are only recognized before the task.
+ */
+export function parseChainArgs(args: string): ChainArgs {
+	const tokens = args.split(/\s+/).filter(Boolean);
+	const value = tokens[0];
+	if (value === undefined || value === "status") return { kind: "status" };
+	if (value === "off") return { kind: "off" };
+	if (!/^\d+$/.test(value) || Number(value) < 1) return { kind: "error", error: CHAIN_USAGE };
+
+	let maxCost: number | undefined;
+	let i = 1;
+	while (i < tokens.length) {
+		const token = tokens[i];
+		let raw: string | undefined;
+		if (token === "--max-cost") {
+			raw = tokens[i + 1];
+			i += 2;
+		} else if (token.startsWith("--max-cost=")) {
+			raw = token.slice("--max-cost=".length);
+			i += 1;
+		} else break;
+		const amount = raw !== undefined && /^\$?\d+(\.\d+)?$/.test(raw) ? Number(raw.replace("$", "")) : NaN;
+		if (!(amount > 0)) return { kind: "error", error: "--max-cost needs a positive dollar amount, e.g. --max-cost 5" };
+		maxCost = amount;
+	}
+	return { kind: "start", maxSteps: Number(value), maxCost, task: tokens.slice(i).join(" ") };
+}
+
+export type ChainSignal =
+	| { kind: "hand-off"; body: string }
+	| { kind: "done" }
+	| { kind: "stop"; reason: string }
+	| { kind: "pause"; reason: string }
+	| { kind: "none" }
+	| { kind: "invalid"; reason: string };
+
+/** Replace fenced code blocks with a blank so quoted syntax never counts as a tag. */
+function stripCodeFences(text: string): string {
+	return text.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\1[^\n]*|$)/gm, "");
+}
+
+/**
+ * Classify a final assistant message. A hand-off only counts when the tag
+ * wraps the *whole* message, outside code fences; a tag anywhere else is
+ * `invalid` (the chain stops) rather than ignored, so a half-formed hand-off
+ * never silently ends the chain as "done".
+ */
+export function parseChainSignal(text: string): ChainSignal {
+	const trimmed = text.trim();
+	if (/^<hand-off\s+done\s*\/>$/.test(trimmed)) return { kind: "done" };
+	const whole = /^<hand-off(?:\s+(stop|pause))?>([\s\S]*)<\/hand-off>$/.exec(trimmed);
+	if (whole) {
+		const word = whole[1] as "stop" | "pause" | undefined;
+		const body = whole[2].trim();
+		if (!body) return { kind: "invalid", reason: `the hand-off ${word ? `${word} reason` : "block"} is empty` };
+		// A literal tag inside the body (hand-offs often explain the syntax) is just text.
+		return word ? { kind: word, reason: body } : { kind: "hand-off", body };
+	}
+	if (/<hand-off(\s[^>]*)?\/?>|<\/hand-off>/.test(stripCodeFences(trimmed))) {
+		return { kind: "invalid", reason: "a hand-off tag appears, but does not wrap the whole final message" };
+	}
+	return { kind: "none" };
+}
+
+interface UsageTotals {
+	input: number;
+	output: number;
+	total: number;
+	cost: number;
+}
+
+/** Sum token usage and cost over the assistant messages of a transcript. */
+export function sumUsage(messages: ReadonlyArray<{ role: string; usage?: unknown }>): UsageTotals {
+	const totals: UsageTotals = { input: 0, output: 0, total: 0, cost: 0 };
+	for (const message of messages) {
+		if (message.role !== "assistant" || !message.usage || typeof message.usage !== "object") continue;
+		const usage = message.usage as {
+			input?: number;
+			output?: number;
+			totalTokens?: number;
+			cost?: { total?: number };
+		};
+		totals.input += usage.input ?? 0;
+		totals.output += usage.output ?? 0;
+		totals.total += usage.totalTokens ?? (usage.input ?? 0) + (usage.output ?? 0);
+		totals.cost += usage.cost?.total ?? 0;
+	}
+	return totals;
+}
+
+/** The three ways a chained agent may end, as shown to it. */
+function signalInstructions(step: number, maxSteps: number): string[] {
+	const last = step >= maxSteps;
+	return [
+		"End with exactly one of these as your **entire** final message (nothing before or after, no code fence):",
+		...(last
+			? ["- This is the last step the chain allows (no more hand-offs), so a `<hand-off>` will be refused."]
+			: ["- `<hand-off>…</hand-off>`: what you did, what is next, and any gotchas."]),
+		"- `<hand-off done/>`: the work is complete.",
+		"- `<hand-off pause>question</hand-off>`: you need an answer from the user. The chain waits in this session and continues when you next finish, after they reply.",
+		"- `<hand-off stop>reason</hand-off>`: you cannot continue (blocked, failing). The chain ends and the user sees your reason.",
+	];
+}
+
+/** Instructions appended to every chained prompt, and sent to the first agent when the chain is armed. */
+export function buildChainProtocol(step: number, maxSteps: number): string {
+	return [
+		`## Autonomous chain: step ${step} of ${maxSteps}`,
+		"",
+		"You are one step in a chain of agents; when you finish, a fresh agent continues from your hand-off. Nobody is watching live.",
+		"",
+		...signalInstructions(step, maxSteps),
+	].join("\n");
+}
+
+/** Follow-up sent once when a final message has no usable tag. */
+export function buildChainNudge(step: number, maxSteps: number, problem: string): string {
+	return [
+		`Your last message can't advance the chain: ${problem}.`,
+		"",
+		...signalInstructions(step, maxSteps),
+	].join("\n");
+}
+
+/**
+ * Escalating budget warnings, as fractions of `--max-cost`. At the last level
+ * and beyond (up to 100%) the agent is told to write its final status; at
+ * 100% the session is aborted.
+ */
+const BUDGET_LEVELS = [
+	{
+		at: 0.8,
+		text: (pct: string, spent: string, max: string) =>
+			`Budget heads-up: this chain has used ${pct}% of its $${max} cost limit ($${spent}). Plan to wrap up soon.`,
+	},
+	{
+		at: 0.95,
+		text: (pct: string, spent: string, max: string) =>
+			`Budget warning: ${pct}% of the $${max} cost limit is used ($${spent}). Stop now: finish only your final tasks and leave the work in a consistent state. Do not start anything new.`,
+	},
+	{
+		at: 0.98,
+		text: (pct: string, spent: string, max: string) =>
+			`Out of budget (${pct}% of $${max}, $${spent}). Your next message must be your last: end with \`<hand-off stop>…</hand-off>\` summarizing the current status (what is done, what is not, where things stand).`,
+	},
+] as const;
+
+/** At or past this fraction of the limit, the chain does not start another session. */
+const NO_NEW_SESSION_AT = BUDGET_LEVELS[1].at;
+
+export type BudgetAction =
+	| { kind: "none" }
+	| { kind: "warn"; level: number; message: string }
+	| { kind: "abort"; reason: string };
+
+/**
+ * What to do about cost while the current session runs. Returns only the
+ * highest level newly crossed, so each level is sent once and a jump over
+ * several levels sends one message. `level` is 1-based, for `ChainState.warned`.
+ */
+export function decideBudgetAction(
+	chain: Pick<ChainState, "maxCost" | "spent" | "warned">,
+	sessionCost: number,
+): BudgetAction {
+	const max = chain.maxCost;
+	if (max === undefined) return { kind: "none" };
+	const spent = chain.spent + sessionCost;
+	if (spent >= max) {
+		return { kind: "abort", reason: `cost limit reached mid-step ($${spent.toFixed(2)} of $${max.toFixed(2)})` };
+	}
+	const crossed = BUDGET_LEVELS.reduce((n, level, i) => (spent >= level.at * max ? i + 1 : n), 0);
+	if (crossed <= (chain.warned ?? 0)) return { kind: "none" };
+	const pct = Math.floor((spent / max) * 100).toString();
+	return { kind: "warn", level: crossed, message: BUDGET_LEVELS[crossed - 1].text(pct, spent.toFixed(2), max.toFixed(2)) };
+}
+
+export interface ChainDecisionInput {
+	chain: Pick<ChainState, "maxSteps" | "sessionIds" | "maxCost" | "spent" | "nudged" | "pending">;
+	/** The session whose agent just settled. */
+	sessionId: string;
+	aborted: boolean;
+	/** The last assistant message, if any. */
+	last: { stopReason?: string; text: string } | undefined;
+	/** Cost of the settled session alone. */
+	sessionCost: number;
+}
+
+export type ChainDecision =
+	| { kind: "ignore" }
+	| { kind: "stop"; reason: string; level: "info" | "warning" | "error" }
+	| { kind: "pause"; reason: string }
+	| { kind: "nudge"; problem: string }
+	| { kind: "hop"; body: string; step: number; spent: number };
+
+/** What the chain should do now that an agent settled. Pure: no I/O, no ctx. */
+export function decideChainAction(input: ChainDecisionInput): ChainDecision {
+	const { chain, last } = input;
+	if (chain.pending) return { kind: "ignore" };
+	// Ignore sessions the chain is not waiting on (a manual /new, say).
+	if (chain.sessionIds.at(-1) !== input.sessionId) return { kind: "ignore" };
+	if (input.aborted) return { kind: "stop", reason: "the run was aborted", level: "warning" };
+	if (!last) return { kind: "stop", reason: "no assistant message to read", level: "error" };
+	if (last.stopReason !== "stop") {
+		return { kind: "stop", reason: `the final message ended with "${last.stopReason ?? "unknown"}"`, level: "error" };
+	}
+
+	const signal = parseChainSignal(last.text);
+	if (signal.kind === "done") return { kind: "stop", reason: "the agent signalled the work is done", level: "info" };
+	if (signal.kind === "stop") return { kind: "stop", reason: `the agent stopped it: ${signal.reason}`, level: "warning" };
+	if (signal.kind === "pause") return { kind: "pause", reason: signal.reason };
+
+	const step = chain.sessionIds.length - 1;
+	const spent = chain.spent + input.sessionCost;
+	if (chain.maxCost !== undefined && spent >= chain.maxCost * NO_NEW_SESSION_AT) {
+		return {
+			kind: "stop",
+			reason: `spent $${spent.toFixed(2)} of the $${chain.maxCost.toFixed(2)} limit, too little left to start another session`,
+			level: "warning",
+		};
+	}
+	if (signal.kind === "none" || signal.kind === "invalid") {
+		const problem = signal.kind === "none" ? "it has no <hand-off> tag" : signal.reason;
+		if (chain.nudged) return { kind: "stop", reason: `${problem} (after one reminder)`, level: "warning" };
+		return { kind: "nudge", problem };
+	}
+	if (step >= chain.maxSteps) {
+		return { kind: "stop", reason: `reached the limit of ${chain.maxSteps} hand-offs; the agent asked for another hand-off`, level: "warning" };
+	}
+	return { kind: "hop", body: signal.body, step, spent };
+}
+
+/** Provenance header, hand-off body, and protocol for the next agent. */
+export function buildChainPrompt(
+	body: string,
+	opts: { step: number; maxSteps: number; fromSessionId: string | undefined },
+): string {
+	const from = opts.fromSessionId?.trim();
+	const header = `<!-- pi-clear chain: step ${opts.step} of ${opts.maxSteps}${from ? ` · handed off from pi session ${from}` : ""} -->`;
+	return `${header}\n\n${body}\n\n---\n\n${buildChainProtocol(opts.step, opts.maxSteps)}`;
+}
+
 export default function (pi: ExtensionAPI) {
 	// In-session state for the hand-off capture; fresh per extension instance,
 	// so it never leaks into a replacement session.
@@ -1235,6 +1566,223 @@ export default function (pi: ExtensionAPI) {
 		return generateFreshPassPrompt(ctx, writer.model, source.text, steering, reasoning);
 	}
 
+	/** Cost of the current session, 0 if it cannot be read (a replaced session's context). */
+	function sessionCost(ctx: ExtensionContext): number {
+		try {
+			return sumUsage(ctx.sessionManager.buildSessionProjection().messages).cost;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** Ends the chain and tells the user why, with the total spent. */
+	function stopChain(ctx: ExtensionContext, reason: string, level: "info" | "warning" | "error"): void {
+		const chain = readChain();
+		writeChain(undefined);
+		let where = "";
+		if (chain) {
+			// While a hand-off is pending, `spent` already includes this session.
+			const spent = chain.pending ? chain.spent : chain.spent + sessionCost(ctx);
+			where = ` (step ${chainStep(chain)} of ${chain.maxSteps}, $${spent.toFixed(2)} spent)`;
+		}
+		if (chain) {
+			// Leave a record in the transcript; the notification alone is not persisted.
+			try {
+				pi.appendEntry(CHAIN_STOP_ENTRY_TYPE, {
+					step: chainStep(chain),
+					maxSteps: chain.maxSteps,
+					reason,
+					level,
+					spent: chain.pending ? chain.spent : chain.spent + sessionCost(ctx),
+					at: new Date().toISOString(),
+				});
+			} catch {
+				// The session may already be replaced; the notification still goes out.
+			}
+		}
+		ctx.ui.notify(`Hand-off chain stopped${where}: ${reason}`, level);
+	}
+
+	/** Stops the chain if the internal advance command never started (it was not dispatched). */
+	function watchAdvance(ctx: ExtensionContext, pending: object): void {
+		setTimeout(() => {
+			const chain = readChain();
+			if (chain?.pending !== pending || chain.pending.started) return;
+			stopChain(ctx, "the hand-off did not start (the internal advance command never ran)", "error");
+		}, ADVANCE_WATCHDOG_MS).unref?.();
+	}
+
+	pi.on("agent_settled", async (event, ctx) => {
+		const chain = readChain();
+		if (!chain) return;
+
+		const messages = ctx.sessionManager.buildSessionProjection().messages;
+		const lastMessage = [...messages].reverse().find((m) => m.role === "assistant") as
+			| { role: string; stopReason?: string; content: string | Array<{ type: string; text?: string }> }
+			| undefined;
+		const totals = sumUsage(messages);
+		const decision = decideChainAction({
+			chain,
+			sessionId: ctx.sessionManager.getSessionId(),
+			aborted: Boolean(event.aborted),
+			last: lastMessage && { stopReason: lastMessage.stopReason, text: messageText(lastMessage) },
+			sessionCost: totals.cost,
+		});
+
+		if (decision.kind === "ignore") return;
+		if (decision.kind === "stop") return stopChain(ctx, decision.reason, decision.level);
+		if (decision.kind === "pause") {
+			// The chain stays armed on this session; the next settle re-evaluates it.
+			writeChain({ ...chain, paused: true, nudged: false });
+			ctx.ui.notify(
+				`Hand-off chain paused at step ${chainStep(chain)} of ${chain.maxSteps}: ${decision.reason}\nReply in this session and the chain continues when the agent finishes. \`/hand-off-chain off\` cancels it.`,
+				"warning",
+			);
+			return;
+		}
+		if (chain.paused) writeChain({ ...chain, paused: false });
+		if (decision.kind === "nudge") {
+			writeChain({ ...chain, paused: false, nudged: true });
+			const step = chainStep(chain);
+			pi.sendUserMessage(buildChainNudge(step, chain.maxSteps, decision.problem));
+			return;
+		}
+
+		const model = ctx.model;
+		if (!model) return stopChain(ctx, "no model to carry over", "error");
+
+		const { step, spent } = decision;
+		const fromSessionId = ctx.sessionManager.getSessionId();
+		pi.appendEntry(CHAIN_HOP_ENTRY_TYPE, {
+			step,
+			maxSteps: chain.maxSteps,
+			provider: model.provider,
+			modelId: model.id,
+			thinkingLevel: ctx.thinkingLevel,
+			tokens: { input: totals.input, output: totals.output, total: totals.total },
+			cost: totals.cost,
+			at: new Date().toISOString(),
+		});
+
+		const pending = {
+			prompt: buildChainPrompt(decision.body, { step: step + 1, maxSteps: chain.maxSteps, fromSessionId }),
+		};
+		writeChain({ ...chain, spent, nudged: false, pending });
+		writeHandoff({ provider: model.provider, modelId: model.id, thinkingLevel: ctx.thinkingLevel });
+		// Event contexts cannot replace the session; a command context can, so
+		// hand the work to the internal command (processed after settled handlers).
+		pi.sendUserMessage(`/${CHAIN_COMMAND}`, { expandPromptTemplates: true });
+		watchAdvance(ctx, pending);
+	});
+
+	// Cost guard while a step runs: escalating steering messages, then a hard abort.
+	pi.on("turn_end", async (event, ctx) => {
+		const chain = readChain();
+		if (!chain || chain.maxCost === undefined || chain.pending) return;
+		if (chain.sessionIds.at(-1) !== ctx.sessionManager.getSessionId()) return;
+
+		const action = decideBudgetAction(chain, sessionCost(ctx));
+		if (action.kind === "abort") {
+			stopChain(ctx, `${action.reason}; aborted session ${ctx.sessionManager.getSessionId()}`, "warning");
+			ctx.abort();
+			return;
+		}
+		// With no tool results the agent is about to finish; a steer would only buy an extra request.
+		if (action.kind === "warn" && event.toolResults.length > 0) {
+			writeChain({ ...chain, warned: action.level });
+			pi.sendUserMessage(action.message, { deliverAs: "steer" });
+		}
+	});
+
+	pi.registerCommand(CHAIN_COMMAND, {
+		description: "Internal: advance an autonomous hand-off chain (not for manual use)",
+		handler: async (_args, ctx) => {
+			const chain = readChain();
+			const pending = chain?.pending;
+			if (!chain || !pending) {
+				ctx.ui.notify("No autonomous hand-off chain is waiting to advance", "warning");
+				return;
+			}
+			pending.started = true;
+			try {
+				const result = await ctx.newSession({
+					withSession: async (next) => {
+						// Retarget the chain at the new session before the first prompt runs.
+						const nextId = next.sessionManager.getSessionId();
+						if (chain.sessionIds.includes(nextId)) {
+							stopChain(next, `session ${nextId} is already in the chain`, "error");
+							return;
+						}
+						writeChain({
+							maxSteps: chain.maxSteps,
+							maxCost: chain.maxCost,
+							spent: chain.spent,
+							sessionIds: [...chain.sessionIds, nextId],
+						});
+						// Do not await: the call may resolve only when the whole run ends.
+						next.sendUserMessage(pending.prompt).catch((err: unknown) => {
+							stopChain(next, `could not send the hand-off prompt: ${messageOf(err)}`, "error");
+						});
+					},
+				});
+				takeHandoff();
+				if (result.cancelled) stopChain(ctx, "session replacement was cancelled", "warning");
+			} catch (err) {
+				takeHandoff();
+				stopChain(ctx, `hand-off failed: ${messageOf(err)}`, "error");
+			}
+		},
+	});
+
+	/** Handles `/hand-off-chain \u2026`. */
+	async function handleChainCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+		const parsed = parseChainArgs(args);
+		if (parsed.kind === "error") return ctx.ui.notify(parsed.error, "error");
+		const chain = readChain();
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (parsed.kind === "status") {
+			if (!chain) return ctx.ui.notify("No hand-off chain is active", "info");
+			const lines = [
+				`Hand-off chain ${chain.paused ? "paused" : "active"}: step ${chainStep(chain)} of ${chain.maxSteps}, $${chain.spent.toFixed(2)} spent before this session${chain.maxCost !== undefined ? ` (limit $${chain.maxCost.toFixed(2)})` : ""}`,
+			];
+			if (chain.sessionIds.length > 1) lines.push(`Sessions: ${chain.sessionIds.join(" \u2192 ")}`);
+			if (chain.sessionIds.at(-1) !== sessionId) {
+				lines.push(`Waiting on session ${chain.sessionIds.at(-1)}, not this one. \`/hand-off-chain off\` clears it.`);
+			}
+			return ctx.ui.notify(lines.join("\n"), "info");
+		}
+		if (parsed.kind === "off") {
+			writeChain(undefined);
+			ctx.ui.notify("Hand-off chain disarmed", "info");
+			return;
+		}
+		if (flowInProgress) return ctx.ui.notify("A hand-off is already in progress", "warning");
+		if (!ctx.model) return ctx.ui.notify("/hand-off-chain: the current session has no model to carry over", "error");
+		if (chain?.sessionIds.at(-1) === sessionId) {
+			const how = chain.paused ? "paused, waiting for your reply" : "already running";
+			return ctx.ui.notify(`A chain is ${how} in this session. \`/hand-off-chain off\` stops it first.`, "warning");
+		}
+		if (!ctx.isIdle()) await ctx.waitForIdle();
+
+		// A chain waiting on some other session is stale (its session was left
+		// by hand); this process can only run one chain, so replace it.
+		writeChain({ maxSteps: parsed.maxSteps, maxCost: parsed.maxCost, spent: 0, sessionIds: [sessionId] });
+		const stale = chain ? " Replaced a stale chain." : "";
+		ctx.ui.notify(
+			`Hand-off chain armed: up to ${parsed.maxSteps} hand-offs${parsed.maxCost !== undefined ? `, $${parsed.maxCost.toFixed(2)} limit` : ", no cost limit"}, same model each hop.${stale} Agents run unattended with your full tool access. \`/hand-off-chain off\` stops it.`,
+			"info",
+		);
+		const protocol = buildChainProtocol(0, parsed.maxSteps);
+		if (parsed.task) {
+			await pi.sendUserMessage(`${parsed.task}\n\n---\n\n${protocol}`);
+		} else {
+			await pi.sendMessage(
+				{ customType: CHAIN_PROTOCOL_TYPE, content: protocol, display: true },
+				{ triggerTurn: false },
+			);
+		}
+	}
+
 	pi.registerFlag(FLAG_MAX_SOURCE_CHARS, {
 		description:
 			"pi-clear: max characters of conversation sent to the /hand-off writer (0 disables the budget)",
@@ -1280,6 +1828,12 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`Clear failed: ${err instanceof Error ? err.message : String(err)}`, "error");
 			}
 		},
+	});
+
+	pi.registerCommand("hand-off-chain", {
+		description:
+			"Autonomous hand-off chain: /hand-off-chain <N> [task] lets agents hand off to each other for up to N hand-offs (the first agent is step 0); `off` disarms, `status` reports",
+		handler: async (args, ctx) => handleChainCommand(args, ctx),
 	});
 
 	pi.registerCommand("hand-off", {

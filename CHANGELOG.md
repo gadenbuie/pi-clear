@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `/hand-off-chain N [--max-cost USD] [task]`: opt-in autonomous hand-off chains. Agents end with `<hand-off>…</hand-off>`, `<hand-off done/>`, or `<hand-off stop>reason</hand-off>`, or `<hand-off pause>question</hand-off>` (waits for your reply, then resumes) and the extension starts the next session on its own, with a step cap, an optional cost limit with escalating warnings (80/95/98%) and a hard stop at 100%, one reminder for a missing tag, a watchdog, provenance headers, and per-hop usage and stop entries. N counts hand-offs: the agent you arm it in is step 0. See the README.
+
 ## [0.5.0] - 2026-11-05
 
 ### Added
