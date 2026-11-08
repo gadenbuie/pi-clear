@@ -1,9 +1,10 @@
 # pi-clear
 
-A [pi](https://github.com/earendil-works/pi) extension with two commands:
+A [pi](https://github.com/earendil-works/pi) extension with three commands:
 
 - `/clear` — start a fresh session **without losing your model**
 - `/hand-off` — hand the conversation to another model with a prompt written by the current agent, or by a cheap one-off "fresh pass"
+- `/hand-off-chain` — let agents hand off to each other on their own, with a step and cost limit
 
 ## Why?
 
