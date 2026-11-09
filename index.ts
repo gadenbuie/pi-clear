@@ -60,7 +60,7 @@ function takeHandoff(): SessionHandoff | undefined {
 }
 
 export const MOVED_NOTICE =
-	"pi-clear 0.6 only provides /clear now. /hand-off moved to @grrrck/pi-hand-off (and /hand-off-chain is now /hand-off-relay): pi install npm:@grrrck/pi-hand-off";
+	"pi-clear 0.6 only provides /clear now. /hand-off moved to @grrrck/pi-hand-off: pi install npm:@grrrck/pi-hand-off";
 
 const NOTICE_MARKER = "pi-clear-moved-notice";
 

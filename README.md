@@ -2,7 +2,7 @@
 
 A [pi](https://github.com/earendil-works/pi) extension that adds `/clear`: start a fresh session **without losing your model**.
 
-> **`/hand-off` and `/hand-off-chain` moved.** They now live in [`@grrrck/pi-hand-off`](https://github.com/gadenbuie/pi-hand-off) (`/hand-off-chain` is now `/hand-off-relay`). Install it with `pi install npm:@grrrck/pi-hand-off`. See [Moving to pi-hand-off](#moving-to-pi-hand-off).
+> **`/hand-off` moved.** It now lives in [`@grrrck/pi-hand-off`](https://github.com/gadenbuie/pi-hand-off). Install it with `pi install npm:@grrrck/pi-hand-off`. See [Moving to pi-hand-off](#moving-to-pi-hand-off).
 
 ## Why?
 
@@ -54,8 +54,6 @@ Versions up to 0.5.0 also shipped `/hand-off`. If you use it:
 1. `pi install npm:@grrrck/pi-hand-off`
 2. Remove `@grrrck/pi-clear` if you no longer want `/clear`; the two packages can be installed side by side.
 3. Settings in `<agent-dir>/pi-clear.json` are still read by `pi-hand-off` when `pi-hand-off.json` doesn't exist. You can rename the file.
-
-`/hand-off-chain` was never published to npm; it is now `/hand-off-relay` in `pi-hand-off`.
 
 ## How it works
 
