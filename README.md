@@ -43,7 +43,8 @@ Because the model is applied with `pi.setModel()`, it's recorded in the new sess
 ## Notes
 
 - `/clear` only registers the slash command; it does not bind a keyboard shortcut, so it won't conflict with other extensions (such as `pi-mono-clear`, which uses `Ctrl+Shift+L`).
-- The model handoff is in-process only: it never touches the filesystem, is invisible to other pi processes, and is discarded if pi exits between clearing and restoring.
+- The model handoff is in-process only: it is invisible to other pi processes and is discarded if pi exits between clearing and restoring.
+- The one file pi-clear writes is `<agent-dir>/pi-clear-moved-notice`, so the "`/hand-off` moved" notice shows only once. It's skipped when `/hand-off` is already available, and delete the file to see it again.
 - Like `/new`, `/clear` does not carry over conversation history, compaction summaries, or session name.
 
 ## Moving to pi-hand-off

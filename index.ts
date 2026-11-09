@@ -24,9 +24,16 @@
  *   also survive `/resume`.
  *
  * `/hand-off` and `/hand-off-relay` used to live here; they are now in
- * `@grrrck/pi-hand-off`.
+ * `@grrrck/pi-hand-off`. Because people upgrading would otherwise just find
+ * `/hand-off` gone, the first interactive startup shows a one-time notice
+ * pointing there — unless a `/hand-off` command already exists (the new
+ * package is installed). "Shown" is a marker file in the agent dir, the only
+ * thing this extension writes. Remove the notice once the move is old news.
  */
 
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type ThinkingLevel = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
@@ -50,6 +57,25 @@ function takeHandoff(): SessionHandoff | undefined {
 	const handoff = store[HANDOFF_KEY];
 	delete store[HANDOFF_KEY];
 	return handoff as SessionHandoff | undefined;
+}
+
+export const MOVED_NOTICE =
+	"pi-clear 0.6 only provides /clear now. /hand-off moved to @grrrck/pi-hand-off (and /hand-off-chain is now /hand-off-relay): pi install npm:@grrrck/pi-hand-off";
+
+const NOTICE_MARKER = "pi-clear-moved-notice";
+
+/** Show the notice once: true when it should be shown now (and records that it was). */
+export function takeMovedNotice(agentDir: string = getAgentDir()): boolean {
+	const marker = join(agentDir, NOTICE_MARKER);
+	if (existsSync(marker)) return false;
+	try {
+		mkdirSync(dirname(marker), { recursive: true });
+		writeFileSync(marker, "shown\n");
+	} catch {
+		// Cannot record it; stay quiet rather than repeat on every start.
+		return false;
+	}
+	return true;
 }
 
 function messageOf(err: unknown): string {
@@ -117,6 +143,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		if (event.reason === "startup" && ctx.hasUI && !pi.getCommands().some((c) => c.name === "hand-off")) {
+			if (takeMovedNotice()) ctx.ui.notify(MOVED_NOTICE, "info");
+		}
 		if (event.reason !== "new") return;
 
 		const handoff = takeHandoff();

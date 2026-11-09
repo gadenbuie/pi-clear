@@ -2,7 +2,10 @@
 // Run with Node 24+: node --test scripts/clear.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
-import extension from "../index.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import extension, { MOVED_NOTICE, takeMovedNotice } from "../index.ts";
 
 function setup({ modelFound = true, applied = true } = {}) {
 	const commands = new Map();
@@ -14,6 +17,7 @@ function setup({ modelFound = true, applied = true } = {}) {
 		on: (event, fn) => handlers.set(event, fn),
 		setModel: async (m) => (calls.setModel.push(m), applied),
 		setThinkingLevel: async (l) => void calls.setThinkingLevel.push(l),
+		getCommands: () => [],
 	};
 	extension(pi);
 	const replacementCtx = {
@@ -61,4 +65,11 @@ test("a later /new does not inherit a stale handoff", async () => {
 	assert.match(calls.notify[0].message, /cancelled/);
 	await handlers.get("session_start")({ reason: "new" }, replacementCtx);
 	assert.deepEqual(calls.setModel, []);
+});
+
+test("the moved notice is shown once per agent dir", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-clear-notice-"));
+	assert.equal(takeMovedNotice(dir), true);
+	assert.equal(takeMovedNotice(dir), false);
+	assert.match(MOVED_NOTICE, /pi-hand-off/);
 });

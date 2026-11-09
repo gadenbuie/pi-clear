@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A one-time startup notice that `/hand-off` moved to `@grrrck/pi-hand-off`, shown in interactive sessions unless a `/hand-off` command already exists. Writes the marker file `<agent-dir>/pi-clear-moved-notice`.
+
 ### Removed
 
 - `/hand-off` and the unreleased `/hand-off-chain` moved to [`@grrrck/pi-hand-off`](https://github.com/gadenbuie/pi-hand-off) (`/hand-off-chain` is now `/hand-off-relay`). This package now only provides `/clear`. The `/hand-off` writer, model pickers, settings file, and flags (`--hand-off-summarizer`, `--hand-off-max-source-chars`) are gone from here; `pi-hand-off` still reads `<agent-dir>/pi-clear.json` when `pi-hand-off.json` doesn't exist.
