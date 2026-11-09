@@ -24,6 +24,13 @@ Or try it without installing:
 pi -e npm:@grrrck/pi-clear
 ```
 
+To install straight from GitHub instead of npm (the latest `main`, or pin a tag or commit after `@`):
+
+```sh
+pi install git:github.com/gadenbuie/pi-clear
+pi install git:github.com/gadenbuie/pi-clear@main
+```
+
 ## Usage
 
 ```text
