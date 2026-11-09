@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A one-time startup notice that `/hand-off` moved to `@grrrck/pi-hand-off`, shown in interactive sessions unless a `/hand-off` command already exists. Writes the marker file `<agent-dir>/pi-clear-moved-notice`.
+- Typing `/hand-off` now shows a notice that it moved to `@grrrck/pi-hand-off` (skipped when a `/hand-off` command exists), instead of sending the text to the model. Nothing is written to disk.
 
 ### Removed
 

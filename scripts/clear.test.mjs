@@ -2,10 +2,7 @@
 // Run with Node 24+: node --test scripts/clear.test.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import extension, { MOVED_NOTICE, takeMovedNotice } from "../index.ts";
+import extension, { isHandOffAttempt, MOVED_NOTICE } from "../index.ts";
 
 function setup({ modelFound = true, applied = true } = {}) {
 	const commands = new Map();
@@ -35,7 +32,7 @@ function setup({ modelFound = true, applied = true } = {}) {
 			return { cancelled: false };
 		},
 	};
-	return { commands, handlers, calls, ctx, model, replacementCtx };
+	return { pi, commands, handlers, calls, ctx, model, replacementCtx };
 }
 
 test("/clear restores the model and thinking level in the new session", async () => {
@@ -67,9 +64,25 @@ test("a later /new does not inherit a stale handoff", async () => {
 	assert.deepEqual(calls.setModel, []);
 });
 
-test("the moved notice is shown once per agent dir", () => {
-	const dir = mkdtempSync(join(tmpdir(), "pi-clear-notice-"));
-	assert.equal(takeMovedNotice(dir), true);
-	assert.equal(takeMovedNotice(dir), false);
+test("typing /hand-off shows the moved notice instead of reaching the model", async () => {
+	const { handlers, calls, ctx } = setup();
+	const input = handlers.get("input");
+	assert.deepEqual(input({ source: "interactive", text: "/hand-off --same fix it" }, ctx), { action: "handled" });
+	assert.equal(calls.notify.at(-1).message, MOVED_NOTICE);
 	assert.match(MOVED_NOTICE, /pi-hand-off/);
+	// Other input, other sources, and similar command names pass through.
+	for (const event of [
+		{ source: "interactive", text: "please /hand-off later" },
+		{ source: "interactive", text: "/hand-offs" },
+		{ source: "rpc", text: "/hand-off" },
+	]) {
+		assert.deepEqual(input(event, ctx), { action: "continue" });
+	}
+});
+
+test("no notice when /hand-off exists (pi-hand-off installed)", () => {
+	const t = setup();
+	t.pi.getCommands = () => [{ name: "hand-off" }];
+	assert.deepEqual(t.handlers.get("input")({ source: "interactive", text: "/hand-off" }, t.ctx), { action: "continue" });
+	assert.equal(isHandOffAttempt("/hand-off"), true);
 });
