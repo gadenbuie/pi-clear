@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Removed
 
-- `/hand-off-chain N [--max-cost USD] [task]`: opt-in autonomous hand-off chains. Agents end with `<hand-off>…</hand-off>`, `<hand-off done/>`, or `<hand-off stop>reason</hand-off>`, or `<hand-off pause>question</hand-off>` (waits for your reply, then resumes) and the extension starts the next session on its own, with a step cap, an optional cost limit with escalating warnings (80/95/98%) and a hard stop at 100%, one reminder for a missing tag, a watchdog, provenance headers, and per-hop usage and stop entries. N counts hand-offs: the agent you arm it in is step 0. See the README.
+- `/hand-off` and the unreleased `/hand-off-chain` moved to [`@grrrck/pi-hand-off`](https://github.com/gadenbuie/pi-hand-off) (`/hand-off-chain` is now `/hand-off-relay`). This package now only provides `/clear`. The `/hand-off` writer, model pickers, settings file, and flags (`--hand-off-summarizer`, `--hand-off-max-source-chars`) are gone from here; `pi-hand-off` still reads `<agent-dir>/pi-clear.json` when `pi-hand-off.json` doesn't exist.
 
 ## [0.5.0] - 2026-11-05
 

@@ -1,14 +1,13 @@
 {
 	"name": "@grrrck/pi-clear",
 	"version": "0.5.0",
-	"description": "Pi extension that starts a fresh session with /clear while keeping your current model and thinking level, and hands conversations off between models with /hand-off",
+	"description": "Pi extension that starts a fresh session with /clear while keeping your current model and thinking level",
 	"keywords": [
 		"pi-package",
 		"pi-extension",
 		"clear",
 		"session",
-		"model",
-		"handoff"
+		"model"
 	],
 	"license": "MIT",
 	"author": "Garrick Aden-Buie (https://garrickadenbuie.com)",

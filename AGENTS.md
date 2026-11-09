@@ -5,9 +5,8 @@
 
 ## Tests
 
-Ask the user before running either `scripts/*.py` smoke test: both launch pi
-with their live configuration, and `rpc-handoff-smoke-test.py` makes a **real,
-billed model request**. Never run them in a loop, in parallel, or as a side
+Ask the user before running `scripts/rpc-smoke-test.py`: it launches pi with
+their live configuration. Never run it in a loop, in parallel, or as a side
 effect of other work.
 
 These need no confirmation:
