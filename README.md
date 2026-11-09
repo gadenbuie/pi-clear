@@ -1,16 +1,12 @@
 # pi-clear
 
-A [pi](https://github.com/earendil-works/pi) extension that adds `/clear`: start a fresh session **without losing your model**.
+A [pi](https://github.com/earendil-works/pi) extension that adds `/clear`: start a fresh session **without losing your model or thinking level**.
 
-> **`/hand-off` moved.** It now lives in [`@grrrck/pi-hand-off`](https://github.com/gadenbuie/pi-hand-off). Install it with `pi install npm:@grrrck/pi-hand-off`. See [Moving to pi-hand-off](#moving-to-pi-hand-off).
+Previously used `/hand-off`? It has [moved to pi-hand-off](#moving-to-pi-hand-off).
 
 ## Why?
 
-Pi's built-in `/new` command starts a new session, but the new session resolves its model from pi's defaults chain — CLI arguments, scoped models, the saved default in settings, then the first available model with auth.
-
-If you switched models mid-session — with `/model`, model cycling, or an extension — that choice is recorded as a `model_change` entry in the *current* session transcript, so `/new` never sees it. Your carefully chosen model quietly reverts to the default.
-
-`/clear` starts an equally fresh session, then restores the model and thinking level you were using.
+Unlike pi's built-in `/new`, `/clear` keeps the model and thinking level you chose in the current session when you start a fresh one.
 
 ## Install
 
@@ -37,34 +33,30 @@ pi install git:github.com/gadenbuie/pi-clear@main
 /clear
 ```
 
-When `/clear` runs, the extension:
-
-1. waits for the agent to become idle if needed, notifying you that it's waiting
-2. captures the active model and thinking level
-3. starts a new session via `ctx.newSession()`
-4. restores the captured model and thinking level in the new session
-5. shows a warning if clearing is cancelled or the captured model can no longer be applied (e.g. its auth was removed)
-
-Because the model is applied with `pi.setModel()`, it's recorded in the new session's transcript — so it also survives `/resume`.
+If the agent is busy, `/clear` lets you know and waits for it to finish. It then starts a fresh session with your current model and thinking level. If the model can no longer be restored (for example, its auth was removed), you'll see a warning. When the new session is saved, the restored model and thinking level also survive `/resume`.
 
 ## Notes
 
-- `/clear` only registers the slash command; it does not bind a keyboard shortcut, so it won't conflict with other extensions (such as `pi-mono-clear`, which uses `Ctrl+Shift+L`).
-- `/clear` never writes to disk. The model handoff is in-process only: it is invisible to other pi processes and is discarded if pi exits between clearing and restoring.
-- Like `/new`, `/clear` does not carry over conversation history, compaction summaries, or session name.
+- `/clear` creates no separate handoff file or persisted state of its own; it simply starts a new conversation.
+- Like `/new`, `/clear` does not carry over conversation history, compaction summaries, or session name. It doesn't delete the prior conversation; previously saved sessions remain available via `/resume`.
 
 ## Moving to pi-hand-off
 
-Versions up to 0.5.0 also shipped `/hand-off`. If you use it:
+Versions up to 0.5.0 also shipped `/hand-off`. To keep using it, install [`@grrrck/pi-hand-off`](https://github.com/gadenbuie/pi-hand-off):
 
-1. `pi install npm:@grrrck/pi-hand-off`
-2. Remove `@grrrck/pi-clear` if you no longer want `/clear`; the two packages can be installed side by side.
-3. If you type `/hand-off` while `pi-hand-off` isn't installed, `pi-clear` shows a notice pointing to it instead of sending the text to the model.
-4. Settings in `<agent-dir>/pi-clear.json` are still read by `pi-hand-off` when `pi-hand-off.json` doesn't exist. You can rename the file.
+```sh
+pi install npm:@grrrck/pi-hand-off
+```
+
+Optional notes:
+
+- You can remove `@grrrck/pi-clear` if you no longer want `/clear`; the two packages can be installed side by side.
+- If you type `/hand-off` while no `/hand-off` command is installed, `pi-clear` shows a notice pointing to the new package instead of sending the text to the model.
+- `pi-hand-off` still reads settings from `<agent-dir>/pi-clear.json` when `pi-hand-off.json` doesn't exist. You can rename the file. The agent directory defaults to `~/.pi/agent` and can be changed with `PI_CODING_AGENT_DIR`.
 
 ## How it works
 
-pi tears down the current runtime when a session is replaced, and extension instances are recreated for the new session. Session-bound objects can't be reused across that boundary, and the post-switch context has no model setter — but the replacement happens within the same process. So `/clear` captures the model and thinking level as plain data in a `globalThis` property, and the new session's extension instance consumes it on `session_start` (reason `new`) and applies it with `pi.setModel()`. The handoff is consumed exactly once, so it can never leak into a later session.
+The model and thinking level handoff is temporary and in-process. The new session consumes it exactly once; if pi exits first, it is discarded.
 
 ## Development
 
